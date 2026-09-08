@@ -114,7 +114,7 @@ Open **[https://warpdrop-py9e.onrender.com/](https://warpdrop-py9e.onrender.com/
 
 ### B. Local Development (Single Machine)
 ```bash
-git clone git@github.com:OnkaarKale/WarpDrop.git
+git clone https://github.com/OnkaarKale/WarpDrop.git
 cd WarpDrop
 npm install
 npm run dev
