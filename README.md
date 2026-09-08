@@ -4,6 +4,16 @@
 
 ---
 
+## 🌐 Live Hosted App
+
+Try WarpDrop directly in your browser without any installation:
+
+👉 **[https://warpdrop-py9e.onrender.com/](https://warpdrop-py9e.onrender.com/)**
+
+*(Hosted live on Render with automatic HTTPS and WebSocket signaling)*
+
+---
+
 ## 👥 Credits & Authorship
 
 - **Created with the help of**: **Antigravity** & **Onkar Kale** ([@OnkaarKale](https://github.com/OnkaarKale))
@@ -18,7 +28,7 @@
 ---
 
 > [!IMPORTANT]
-> **Status (Validated & Production-Hardened)**: Passing **191/191 automated tests** across 11 test suites (0 failures). Tested across the full file transfer matrix (0 B to 50 MB), multi-file queues, recursive nested folder structures, Zip Slip traversal protection, tamper detection, signaling isolation, and resource bounds.
+> **Status (Validated & Production-Hardened)**: Passing **196/196 automated tests** across 11 test suites (0 failures). Tested across the full file transfer matrix (0 B to multi-gigabytes), multi-file queues, recursive nested folder structures, Zip Slip traversal protection, tamper detection, signaling isolation, and resource bounds.
 
 ---
 
@@ -99,14 +109,19 @@ Measured on Node.js v24 (Linux x86_64) using `scripts/benchmark.js`:
 
 ## 5. Deployment Guide
 
-### A. Local Development (Single Machine)
+### A. Try the Hosted Version
+Open **[https://warpdrop-py9e.onrender.com/](https://warpdrop-py9e.onrender.com/)** directly in any browser on your computer and mobile device.
+
+### B. Local Development (Single Machine)
 ```bash
+git clone git@github.com:OnkaarKale/WarpDrop.git
+cd WarpDrop
 npm install
 npm run dev
 ```
 Open two browser tabs at `http://localhost:3000`. Tab 1 generates the pairing QR / session; Tab 2 joins using the session URL or pairing payload.
 
-### B. Home / Office LAN (Wi-Fi)
+### C. Home / Office LAN (Wi-Fi)
 1. Start the server on host machine:
    ```bash
    npm start
@@ -114,7 +129,7 @@ Open two browser tabs at `http://localhost:3000`. Tab 1 generates the pairing QR
 2. The server binds to `0.0.0.0:3000` and displays your machine's LAN IP (e.g., `http://192.168.1.50:3000`).
 3. Scan the QR code displayed in the terminal or on the web UI using your mobile device connected to the same Wi-Fi.
 
-### C. Production Deployment (HTTPS + WSS)
+### D. Production Deployment (HTTPS + WSS)
 To satisfy browser WebRTC security policies (`getUserMedia` for camera QR scanner and Web Crypto), production deployments must be served over TLS/HTTPS:
 
 ```nginx
@@ -166,7 +181,7 @@ server {
 ## 8. Running Tests & Verification
 
 ```bash
-# Run full automated test suite (191 tests)
+# Run full automated test suite (196 tests)
 npm test
 
 # Run Phase 7 validation test suite
