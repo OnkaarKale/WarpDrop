@@ -29,7 +29,8 @@ const mimeTypes = {
   '.css': 'text/css',
   '.json': 'application/json',
   '.png': 'image/png',
-  '.svg': 'image/svg+xml'
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon'
 };
 
 /**

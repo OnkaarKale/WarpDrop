@@ -895,6 +895,38 @@ async function saveExtractedToFolder(extractedFiles) {
   }
 }
 
+// Helper to reliably trigger automatic browser file download
+function triggerDirectDownload(url, filename) {
+  try {
+    const link = document.createElement('a');
+    link.style.display = 'none';
+    link.href = url;
+    link.setAttribute('download', filename);
+    link.setAttribute('rel', 'noopener');
+    document.body.appendChild(link);
+
+    // MouseEvent dispatch with click() fallback for maximum mobile and desktop compatibility
+    try {
+      const clickEvent = new MouseEvent('click', {
+        view: window,
+        bubbles: true,
+        cancelable: true
+      });
+      link.dispatchEvent(clickEvent);
+    } catch {
+      link.click();
+    }
+
+    setTimeout(() => {
+      try {
+        document.body.removeChild(link);
+      } catch {}
+    }, 600);
+  } catch (err) {
+    console.warn('[P2P] Direct download trigger error:', err);
+  }
+}
+
 // Receiver finalization, SHA-256 verification, and automatic unzipping
 async function finalizeReceiverTransfer() {
   ui.transition(UIStates.VERIFYING);
@@ -909,8 +941,10 @@ async function finalizeReceiverTransfer() {
     }
     activeDownloadUrl = URL.createObjectURL(blob);
 
-    downloadFileBtn.href = activeDownloadUrl;
-    downloadFileBtn.download = result.name;
+    if (downloadFileBtn) {
+      downloadFileBtn.href = activeDownloadUrl;
+      downloadFileBtn.download = result.name;
+    }
 
     // Automatic Unzipping on Receiver
     let extractedFiles = [];
@@ -927,31 +961,22 @@ async function finalizeReceiverTransfer() {
     currentExtractedFiles = extractedFiles;
     showCompleteView(result.name, blob.size, reassembler.manifest.sha256, extractedFiles);
 
+    // Direct Automatic Download: Download immediately without waiting for user action!
     if (extractedFiles.length === 1) {
       // Single unzipped file: auto-download that file directly
       const item = extractedFiles[0];
-      const singleUrl = URL.createObjectURL(new Blob([item.data], { type: item.file.type || 'application/octet-stream' }));
-      const autoDownload = document.createElement('a');
-      autoDownload.href = singleUrl;
-      autoDownload.download = item.name;
-      document.body.appendChild(autoDownload);
-      autoDownload.click();
+      const singleBlob = new Blob([item.data], { type: item.file.type || 'application/octet-stream' });
+      const singleUrl = URL.createObjectURL(singleBlob);
+      triggerDirectDownload(singleUrl, item.name);
       setTimeout(() => {
-        try { document.body.removeChild(autoDownload); } catch {}
-        URL.revokeObjectURL(singleUrl);
-      }, 500);
+        try { URL.revokeObjectURL(singleUrl); } catch {}
+      }, 3000);
     } else {
-      // Multi-file / Folder: auto-download the ZIP archive itself!
-      // This guarantees that all subfolders and all files are 100% preserved in the user's Downloads folder!
-      const autoDownload = document.createElement('a');
-      autoDownload.href = activeDownloadUrl;
-      autoDownload.download = result.name;
-      document.body.appendChild(autoDownload);
-      autoDownload.click();
-      setTimeout(() => {
-        try { document.body.removeChild(autoDownload); } catch {}
-      }, 150);
+      // Normal single file OR multi-file folder ZIP: download directly!
+      triggerDirectDownload(activeDownloadUrl, result.name);
     }
+
+    updateBadge('Downloaded!', 'badge-success');
   } catch (err) {
     console.error('[P2P] Receiver finalization error:', err);
     showAlert(`Integrity verification failed: ${err.message}`);
