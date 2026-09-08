@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>WarpDrop — Secure P2P File Transfer</title>
+  <meta name="description" content="WarpDrop: Ultra-fast, encrypted peer-to-peer file and folder transfer directly between browsers using WebRTC.">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="/css/styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/hashes/sha2.js": "/vendor/noble-hashes/sha2.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-group">
+        <div class="brand-icon" aria-hidden="true">⚡</div>
+        <div>
+          <h1 class="brand-title">WarpDrop</h1>
+          <p class="subtitle">Secure P2P Transfer &bull; End-to-End Encrypted File Transfer</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <span id="connection-badge" class="badge badge-idle">Ready</span>
+      </div>
+    </header>
+
+    <!-- Global Notification Banner -->
+    <div id="alert-banner" class="alert-banner hidden" role="alert">
+      <span id="alert-message"></span>
+      <button id="alert-close" class="btn-icon" aria-label="Dismiss alert">&times;</button>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs" role="tablist">
+      <button id="tab-send" class="tab active" role="tab" aria-selected="true" aria-controls="panel-send">
+        📤 Send File
+      </button>
+      <button id="tab-receive" class="tab" role="tab" aria-selected="false" aria-controls="panel-receive">
+        📥 Receive File
+      </button>
+    </nav>
+
+    <main class="main-content">
+      <!-- PANEL: SEND FILE -->
+      <section id="panel-send" class="tab-panel active" role="tabpanel" aria-labelledby="tab-send">
+        <!-- File Picker / Dropzone -->
+        <div id="dropzone" class="dropzone">
+          <div class="dropzone-inner">
+            <div class="dropzone-icon" aria-hidden="true">📁</div>
+            <p class="dropzone-title">Drag & drop files or folders here</p>
+            <p class="dropzone-hint">or choose from your device</p>
+            <input type="file" id="file-input" class="file-input" multiple aria-label="Select files to send" />
+            <input type="file" id="folder-input" class="file-input" webkitdirectory directory aria-label="Select folder to send" />
+            <div class="picker-buttons">
+              <button type="button" id="browse-btn" class="btn btn-secondary">📄 Choose Files</button>
+              <button type="button" id="browse-folder-btn" class="btn btn-secondary">📁 Choose Folder</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Selected File Information -->
+        <div id="selected-file-card" class="card hidden">
+          <div class="card-header">
+            <h3 id="selected-card-title">Selected Items</h3>
+            <button id="remove-file-btn" class="btn-text danger">Remove</button>
+          </div>
+          <div class="file-summary">
+            <div id="selected-file-icon" class="file-icon" aria-hidden="true">📄</div>
+            <div class="file-details">
+              <div id="selected-file-name" class="file-name">filename.txt</div>
+              <div class="file-meta">
+                <span id="selected-file-size">0 MB</span> &bull; 
+                <span id="selected-file-type">text/plain</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sender Pairing Panel -->
+        <div class="card pairing-card">
+          <div class="card-header">
+            <h3>Pair with Receiver</h3>
+          </div>
+          <p class="hint-text">Connect to the receiving device on your local Wi-Fi / network.</p>
+
+          <div class="button-group">
+            <button type="button" id="open-scanner-btn" class="btn btn-primary btn-lg btn-block">
+              📷 Scan Receiver QR Code
+            </button>
+          </div>
+
+          <div class="divider"><span>OR ENTER DETAILS MANUALLY</span></div>
+
+          <form id="manual-pair-form" class="manual-pair-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="input-host">Signaling Host / IP</label>
+                <input type="text" id="input-host" placeholder="e.g. 192.168.1.50" required />
+              </div>
+              <div class="form-group form-group-sm">
+                <label for="input-port">Port</label>
+                <input type="number" id="input-port" placeholder="3000" min="1" max="65535" required />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="input-session-id">Session ID</label>
+              <input type="text" id="input-session-id" placeholder="session-..." required />
+            </div>
+
+            <div class="form-group">
+              <label for="input-token">Auth Token</label>
+              <input type="text" id="input-token" placeholder="tok-..." required />
+            </div>
+
+            <button type="submit" id="manual-connect-btn" class="btn btn-secondary btn-block">
+              Connect & Start Transfer
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- PANEL: RECEIVE FILE -->
+      <section id="panel-receive" class="tab-panel hidden" role="tabpanel" aria-labelledby="tab-receive">
+        <div class="card receiver-card">
+          <div class="card-header">
+            <h3>Ready to Receive</h3>
+            <button id="refresh-session-btn" class="btn-text" title="Generate new ephemeral session">New Code</button>
+          </div>
+          <p class="hint-text">Ask the sender to scan this QR code or enter the session details below.</p>
+
+          <div class="qr-container">
+            <div id="qr-loading" class="spinner-container">
+              <div class="spinner"></div>
+              <p>Generating secure session...</p>
+            </div>
+            <img id="receive-qr-img" class="qr-code-img hidden" alt="Device Pairing QR Code" />
+          </div>
+
+          <div class="session-info-card">
+            <div class="info-row">
+              <div class="info-row-header">
+                <span class="info-label">Direct Pairing Link</span>
+                <button type="button" id="copy-field-link" class="btn-copy-sm" title="Copy Direct Link">📋 Copy</button>
+              </div>
+              <span id="display-link" class="code-pill code-pill-full">Generating...</span>
+            </div>
+            <div class="info-row">
+              <div class="info-row-header">
+                <span class="info-label">Session ID</span>
+                <button type="button" id="copy-field-session" class="btn-copy-sm" title="Copy Session ID">📋 Copy</button>
+              </div>
+              <span id="display-session-id" class="code-pill code-pill-full">Generating...</span>
+            </div>
+            <div class="info-row">
+              <div class="info-row-header">
+                <span class="info-label">Auth Token</span>
+                <button type="button" id="copy-field-token" class="btn-copy-sm" title="Copy Auth Token">📋 Copy</button>
+              </div>
+              <span id="display-token" class="code-pill code-pill-full">Generating...</span>
+            </div>
+            <div class="info-row">
+              <div class="info-row-header">
+                <span class="info-label">Signaling Host &amp; Port</span>
+                <button type="button" id="copy-field-host" class="btn-copy-sm" title="Copy Host & Port">📋 Copy</button>
+              </div>
+              <span id="display-host" class="code-pill code-pill-full">Detecting...</span>
+            </div>
+          </div>
+
+          <button type="button" id="copy-details-btn" class="btn btn-secondary btn-block">
+            📋 Copy All Session Details
+          </button>
+        </div>
+      </section>
+
+      <!-- VIEW: ACTIVE TRANSFER PROGRESS -->
+      <section id="view-transferring" class="card transfer-view hidden">
+        <div class="card-header">
+          <h3 id="transfer-title">Transferring File...</h3>
+          <span id="transfer-direction-badge" class="badge badge-info">Sending</span>
+        </div>
+
+        <div class="transfer-file-info">
+          <div id="transfer-filename" class="file-name bold">filename.ext</div>
+          <div id="transfer-filesize" class="file-meta">0 B / 0 B</div>
+        </div>
+
+        <div class="progress-section">
+          <div class="progress-bar-container" role="progressbar" id="progress-bar-container" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progress-fill" class="progress-fill" style="width: 0%;"></div>
+          </div>
+          <div class="progress-metrics">
+            <span id="progress-percent" class="metric-bold">0%</span>
+            <span id="progress-speed" class="metric">0 MB/s</span>
+            <span id="progress-eta" class="metric">ETA: --</span>
+          </div>
+        </div>
+
+        <div class="transfer-actions">
+          <button type="button" id="cancel-transfer-btn" class="btn btn-danger">Cancel Transfer</button>
+        </div>
+      </section>
+
+      <!-- VIEW: TRANSFER COMPLETE & VERIFIED -->
+      <section id="view-complete" class="card complete-view hidden">
+        <div class="complete-badge" aria-hidden="true">✅</div>
+        <h2>Transfer Complete!</h2>
+        <p class="success-message">File received, decrypted, and verified end-to-end.</p>
+
+        <div class="verification-box">
+          <div class="verification-item">
+            <span class="v-label">File:</span>
+            <span id="complete-filename" class="v-value">file.ext</span>
+          </div>
+          <div class="verification-item">
+            <span class="v-label">Size:</span>
+            <span id="complete-filesize" class="v-value">0 MB</span>
+          </div>
+          <div class="verification-item">
+            <span class="v-label">Integrity:</span>
+            <span class="v-value verified-pill">🛡️ SHA-256 Verified Match</span>
+          </div>
+          <div class="sha-box">
+            <span id="complete-sha256" class="sha-hash">--</span>
+          </div>
+        </div>
+
+        <!-- Extracted / Unzipped Files Section for Folders & Multi-File Packages -->
+        <div id="unzipped-card" class="unzipped-card hidden">
+          <div class="unzipped-header">
+            <div>
+              <h4 id="unzipped-title">📂 Folder &amp; Notes Explorer</h4>
+              <span id="unzipped-stats" class="hint-text"></span>
+            </div>
+            <div class="unzipped-actions">
+              <button type="button" id="save-folder-disk-btn" class="btn btn-primary btn-sm hidden">
+                📁 Save Folder to Disk
+              </button>
+              <button type="button" id="download-all-unzipped-btn" class="btn btn-outline btn-sm">
+                ⬇️ Download All Loose Files
+              </button>
+            </div>
+          </div>
+
+          <!-- Hierarchy & Mobile Guide -->
+          <div class="folder-hierarchy-guide">
+            <div class="guide-title">💡 How to keep all subfolders neatly organized:</div>
+            <ul class="guide-list">
+              <li><strong>💻 On Laptop / PC:</strong> Click <em>"📁 Save Folder to Disk"</em> above to write the real folder structure directly to your disk, or right-click the downloaded <code>.zip</code> &rarr; <em>Extract All</em>.</li>
+              <li><strong>📱 On Android Phone:</strong> Open <em>Files by Google</em> app &rarr; Downloads &rarr; tap the <code>.zip</code> file &rarr; tap <strong>Extract</strong>. All subfolders are restored automatically!</li>
+              <li><strong>🍏 On iPhone / iPad:</strong> Open the built-in <em>Files</em> app &rarr; Downloads &rarr; tap the <code>.zip</code> file to extract into a folder.</li>
+              <li><strong>🌐 Direct in Browser:</strong> You can also search, browse, and view any note directly in the explorer below!</li>
+            </ul>
+          </div>
+
+          <!-- Folder Search Box -->
+          <div class="folder-search-box">
+            <input type="text" id="folder-search-input" placeholder="🔍 Search notes, documents, or subfolders..." class="form-input" />
+            <span id="folder-search-count" class="search-count"></span>
+          </div>
+
+          <div id="unzipped-files-list" class="unzipped-list"></div>
+        </div>
+
+        <div class="complete-actions">
+          <a id="download-file-btn" class="btn btn-primary btn-lg" download>
+            💾 Save / Download File
+          </a>
+          <button type="button" id="start-new-btn" class="btn btn-secondary">
+            Transfer Another File
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <!-- MODAL: SAS AUTHENTICATION VERIFICATION -->
+    <div id="modal-sas" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sas-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <h3 id="sas-title">Verify Peer Identity</h3>
+        <p class="modal-desc">
+          Compare this authentication fingerprint with the other device to guarantee no Man-in-the-Middle (MitM) attacker is intercepting:
+        </p>
+
+        <div class="sas-display-box">
+          <div id="sas-digits" class="sas-digits">000 000</div>
+          <div id="sas-emojis" class="sas-emojis">🔒 🔑 🛡️ ✨</div>
+          <div id="sas-words" class="sas-words">word word word word</div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="sas-confirm-btn" class="btn btn-primary btn-block">
+            ✓ Codes Match, Proceed
+          </button>
+          <button type="button" id="sas-reject-btn" class="btn btn-danger btn-block">
+            ✕ Mismatch, Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: RECEIVER TRANSFER APPROVAL GATE -->
+    <div id="modal-approval" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <h3 id="approval-title">Incoming File Transfer</h3>
+        <p class="modal-desc">A nearby peer wants to send you a file:</p>
+
+        <div class="approval-file-details">
+          <div class="detail-row">
+            <span class="d-label">File:</span>
+            <span id="approval-filename" class="d-value bold">unnamed</span>
+          </div>
+          <div class="detail-row">
+            <span class="d-label">Size:</span>
+            <span id="approval-filesize" class="d-value">0 MB</span>
+          </div>
+          <div class="detail-row">
+            <span class="d-label">Chunks:</span>
+            <span id="approval-chunks" class="d-value">0</span>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="approve-transfer-btn" class="btn btn-primary btn-block">
+            Accept & Download
+          </button>
+          <button type="button" id="reject-transfer-btn" class="btn btn-danger btn-block">
+            Decline
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: CAMERA QR SCANNER -->
+    <div id="modal-scanner" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="scanner-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content modal-scanner-content">
+        <div class="modal-header">
+          <h3 id="scanner-title">Scan Receiver QR Code</h3>
+          <button type="button" id="close-scanner-btn" class="btn-icon" aria-label="Close scanner">&times;</button>
+        </div>
+
+        <div class="video-viewfinder-container">
+          <video id="scanner-video" playsinline></video>
+          <div class="viewfinder-overlay">
+            <div class="reticle"></div>
+          </div>
+        </div>
+
+        <p id="scanner-status" class="hint-text text-center">Point your camera at the receiver's QR code</p>
+
+        <div class="divider"><span>OR PASTE PAIRING LINK</span></div>
+        <div class="scanner-paste-section">
+          <div class="input-with-button">
+            <input type="text" id="scanner-modal-paste-input" placeholder="Paste link (http://...) or session details" class="form-input" />
+            <button type="button" id="scanner-modal-paste-btn" class="btn btn-primary">Connect</button>
+          </div>
+        </div>
+
+        <div class="divider"><span>OR UPLOAD QR IMAGE</span></div>
+        <div class="scanner-fallbacks">
+          <input type="file" id="scanner-file-input" accept="image/*" class="file-input" aria-label="Upload QR code image" />
+          <button type="button" id="scanner-upload-btn" class="btn btn-secondary btn-block">
+            Upload QR Code Screenshot
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p class="mb-0">⚡ <strong>WarpDrop</strong> &bull; Zero-server-storage &bull; WebRTC DataChannel &bull; AES-256-GCM authenticated</p>
+    </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

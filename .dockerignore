@@ -1,0 +1,12 @@
+node_modules/
+.git/
+.active_sessions.json
+.system_generated/
+.agents/
+tests/
+scripts/
+certs/
+nginx/
+*.log
+.DS_Store
+Thumbs.db

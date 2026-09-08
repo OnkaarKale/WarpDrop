@@ -1,0 +1,31 @@
+{
+  "name": "warpdrop",
+  "version": "1.0.0",
+  "description": "WarpDrop — Secure wireless peer-to-peer file and folder transfer application using WebRTC DataChannel and end-to-end encryption",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "test": "node --test tests/**/*.test.js",
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "serve:nginx": "node scripts/start-all.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "p2p",
+    "webrtc",
+    "file-transfer",
+    "e2ee",
+    "crypto",
+    "security"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Local runtime & session storage
+.active_sessions.json
+.system_generated/
+
+# Environment & credentials
+.env
+.env.local
+.env.*.local
+certs/
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Agent scratch / cache
+.agents/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
