@@ -49,6 +49,9 @@ export async function computeFileCrc32(file) {
       crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ buf[i]) & 0xFF];
     }
     offset += sliceSize;
+    if (offset < file.size && offset % (32 * 1024 * 1024) === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
@@ -182,7 +185,9 @@ export async function extractZipArchive(zipInput) {
   if (zipInput instanceof ArrayBuffer) {
     arrayBuffer = zipInput;
   } else if (zipInput instanceof Uint8Array) {
-    arrayBuffer = zipInput.buffer.slice(zipInput.byteOffset, zipInput.byteOffset + zipInput.byteLength);
+    arrayBuffer = zipInput.byteOffset === 0 && zipInput.byteLength === zipInput.buffer.byteLength
+      ? zipInput.buffer
+      : zipInput.buffer.slice(zipInput.byteOffset, zipInput.byteOffset + zipInput.byteLength);
   } else if (zipInput && typeof zipInput.arrayBuffer === 'function') {
     arrayBuffer = await zipInput.arrayBuffer();
   } else {

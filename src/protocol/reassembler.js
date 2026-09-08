@@ -16,46 +16,66 @@ import { decryptChunk } from '../crypto/cipher.js';
 import { createStreamingHash } from '../crypto/hash.js';
 
 function tagToHex(bytes) {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
 }
 
 /**
- * In-Memory Chunk Sink (stores chunks in a Map).
- * NOTE: Intended for automated tests and small-to-medium files.
- * For multi-gigabyte transfers, a disk or stream-backed sink (e.g. FileSystemWritableFileStream) must be used.
+ * In-Memory Chunk Sink.
+ * Stores chunk references in an indexed Array and assembles into Blob (for large files)
+ * or Uint8Array (for small payloads/tests) to prevent V8 heap exhaustion and tab crashes.
  */
 export class MemoryChunkSink {
-  constructor(totalChunks, fileSize) {
+  constructor(totalChunks, fileSize, { mimeType = 'application/octet-stream', preferBlob = false } = {}) {
     this.totalChunks = totalChunks;
     this.fileSize = fileSize;
-    this.chunks = new Map();
+    this.mimeType = mimeType;
+    this.preferBlob = preferBlob;
+    this.chunks = new Array(totalChunks);
   }
 
   async writeChunk(chunkIndex, data) {
-    this.chunks.set(chunkIndex, data);
+    this.chunks[chunkIndex] = data;
   }
 
   async readChunk(chunkIndex) {
-    return this.chunks.get(chunkIndex) || null;
+    return this.chunks[chunkIndex] || null;
   }
 
   async finalize() {
-    const assembled = new Uint8Array(this.fileSize);
-    let offset = 0;
+    // For small files (<= 16MB) without preferBlob, return contiguous Uint8Array (100% test compatible).
+    // For large files (> 16MB) or when preferBlob is enabled, assemble via Blob directly from parts
+    // to prevent catastrophic V8 ArrayBuffer allocation failure / OOM tab crashes ("Aw, Snap!").
+    if (typeof Blob === 'undefined' || (this.fileSize <= 16 * 1024 * 1024 && !this.preferBlob)) {
+      const assembled = new Uint8Array(this.fileSize);
+      let offset = 0;
+      for (let i = 0; i < this.totalChunks; i++) {
+        const chunk = this.chunks[i];
+        if (chunk) {
+          assembled.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+      }
+      return assembled;
+    }
+
+    const parts = [];
     for (let i = 0; i < this.totalChunks; i++) {
-      const chunk = this.chunks.get(i);
+      const chunk = this.chunks[i];
       if (chunk) {
-        assembled.set(chunk, offset);
-        offset += chunk.byteLength;
+        parts.push(chunk);
       }
     }
-    return assembled;
+    const blob = new Blob(parts, { type: this.mimeType || 'application/octet-stream' });
+    this.chunks = []; // Immediately release references so GC can reclaim RAM
+    return blob;
   }
 
   cleanup() {
-    this.chunks.clear();
+    this.chunks = [];
   }
 }
 
@@ -90,7 +110,10 @@ export class FileReassembler {
     // Tracks 16-byte GCM authentication tag hex for accepted chunks to detect conflicting duplicates
     this.chunkTags = new Map();
 
-    this.sink = sink || new MemoryChunkSink(this.totalChunks, this.fileSize);
+    this.sink = sink || new MemoryChunkSink(this.totalChunks, this.fileSize, {
+      mimeType: this.manifest.mimeType,
+      preferBlob: typeof window !== 'undefined'
+    });
     this.isFinalized = false;
   }
 
@@ -215,9 +238,13 @@ export class FileReassembler {
    *
    * @returns {Promise<{ verified: boolean, data: any, name: string, mimeType: string }>}
    */
-  async finalize() {
+  async finalize({ onProgress } = {}) {
     if (!this.isApproved) {
       throw new Error('Cannot finalize transfer: transfer not approved by receiver');
+    }
+
+    if (this.isFinalized) {
+      throw new Error('Cannot finalize transfer: transfer already finalized');
     }
 
     if (!this.isComplete()) {
@@ -234,6 +261,19 @@ export class FileReassembler {
         throw new Error(`Missing expected chunk at index ${i}`);
       }
       hasher.update(chunk);
+
+      // Periodically yield to browser event loop (every 256 chunks = 16 MB)
+      // Prevents UI freeze and prevents browser watchdog crash ("Aw, Snap!")
+      if (i > 0 && i % 256 === 0) {
+        if (typeof onProgress === 'function') {
+          onProgress(Math.round((i / this.totalChunks) * 100));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    if (typeof onProgress === 'function') {
+      onProgress(100);
     }
 
     const computedSha256 = hasher.digest('hex');

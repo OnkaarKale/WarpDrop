@@ -54,17 +54,16 @@ export class FileChunker {
     this.totalChunks = this.fileSize === 0 ? 1 : Math.ceil(this.fileSize / this.chunkSize);
     this.currentChunkIndex = 0;
     this.manifestCache = null;
-
-    // Streaming SHA-256 hasher for plaintext
-    this.hasher = createStreamingHash();
   }
 
   /**
    * Compute metadata manifest including whole-file SHA-256 hash.
    * Processes chunks incrementally to calculate SHA-256 without loading entire file into memory.
+   * @param {Object} [options]
+   * @param {Function} [options.onProgress] - Optional progress callback
    * @returns {Promise<Object>} Validated manifest
    */
-  async getManifest() {
+  async getManifest({ onProgress } = {}) {
     if (this.manifestCache) {
       return this.manifestCache;
     }
@@ -79,6 +78,18 @@ export class FileChunker {
       const rawChunk = await this._readSlice(offset, end);
       hash.update(rawChunk);
       offset = end;
+
+      // Yield every 32 MB to keep event loop and UI alive for large files (> 500 MB / multi-GB)
+      if (offset < this.fileSize && (offset % (32 * 1024 * 1024) === 0)) {
+        if (typeof onProgress === 'function') {
+          onProgress(Math.round((offset / this.fileSize) * 100));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    if (typeof onProgress === 'function') {
+      onProgress(100);
     }
 
     // If file is 0 bytes, hash empty buffer
@@ -140,9 +151,6 @@ export class FileChunker {
 
     // Read slice (bounded memory)
     const plaintext = await this._readSlice(startOffset, endOffset);
-
-    // Update ongoing stream hash
-    this.hasher.update(plaintext);
 
     // Construct AAD: 18-byte header template
     const headerAad = new Uint8Array(18);

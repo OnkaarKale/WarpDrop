@@ -178,6 +178,7 @@ const saveFolderDiskBtn = document.getElementById('save-folder-disk-btn');
 const downloadAllUnzippedBtn = document.getElementById('download-all-unzipped-btn');
 
 let currentExtractedFiles = [];
+let isFinalizingTransfer = false;
 
 // Helper to generate a random client peer ID
 function generatePeerId(prefix = 'peer') {
@@ -595,12 +596,15 @@ async function handleIncomingFrame(frame) {
 
       if (frameType === FRAME_TYPE_CHUNK) {
         if (reassembler) {
+          if (reassembler.isFinalized) {
+            return;
+          }
           await reassembler.receiveChunk(frame);
           const progress = reassembler.getProgress();
           const transferredBytes = (progress.receivedChunks / progress.totalChunks) * reassembler.manifest.size;
           updateProgressMetrics(transferredBytes, reassembler.manifest.size);
 
-          if (reassembler.isComplete()) {
+          if (reassembler.isComplete() && !isFinalizingTransfer) {
             await finalizeReceiverTransfer();
           }
         }
@@ -667,7 +671,22 @@ async function handleIncomingFrame(frame) {
           staticIv: cryptoKeys.outboundStaticIv
         });
 
-        const manifest = await chunker.getManifest();
+        updateBadge('Hashing file...', 'badge-info');
+        if (transferStatusMessage) {
+          transferStatusMessage.classList.remove('hidden');
+          transferStatusMessage.innerHTML = '🔍 <strong>Computing file integrity hash...</strong>';
+        }
+        const manifest = await chunker.getManifest({
+          onProgress: (pct) => {
+            updateBadge(`Hashing ${pct}%...`, 'badge-info');
+            if (transferStatusMessage) {
+              transferStatusMessage.innerHTML = `🔍 <strong>Computing file integrity hash (${pct}%)...</strong>`;
+            }
+          }
+        });
+        if (transferStatusMessage) {
+          transferStatusMessage.classList.add('hidden');
+        }
         console.log('[P2P] Sending MANIFEST directly to receiver:', manifest);
         await sendControlMessage(ControlActions.MANIFEST, { manifest });
         updateBadge('Sending file...', 'badge-info');
@@ -855,6 +874,11 @@ async function startSenderStreaming() {
         ? progress.bytesTransferred
         : (progress.currentChunk / progress.totalChunks) * chunker.fileSize;
       updateProgressMetrics(transferredBytes, chunker.fileSize);
+
+      // Periodically yield to event loop (every 128 chunks = 8 MB) to prevent browser CPU hogging
+      if (chunker.currentChunkIndex % 128 === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
 
     if (!isCancelled) {
@@ -963,6 +987,9 @@ function triggerDirectDownload(url, filename) {
 
 // Receiver finalization, SHA-256 verification, and automatic unzipping
 async function finalizeReceiverTransfer() {
+  if (isFinalizingTransfer) return;
+  isFinalizingTransfer = true;
+
   ui.transition(UIStates.VERIFYING);
   updateBadge('Verifying SHA-256...', 'badge-info');
   if (transferStatusMessage) {
@@ -971,9 +998,16 @@ async function finalizeReceiverTransfer() {
   }
 
   try {
-    const result = await reassembler.finalize();
+    const result = await reassembler.finalize({
+      onProgress: (percent) => {
+        if (transferStatusMessage) {
+          transferStatusMessage.innerHTML = `🔍 <strong>Verifying file integrity... ${percent}%</strong>`;
+        }
+        updateBadge(`Verifying ${percent}%`, 'badge-info');
+      }
+    });
     console.log('[P2P] Receiver: reassembly & SHA-256 verification successful!', result.name);
-    const blob = new Blob([result.data], { type: result.mimeType });
+    const blob = result.data instanceof Blob ? result.data : new Blob([result.data], { type: result.mimeType });
     if (activeDownloadUrl) {
       try { URL.revokeObjectURL(activeDownloadUrl); } catch {}
     }
@@ -985,14 +1019,25 @@ async function finalizeReceiverTransfer() {
     }
 
     // Automatic Unzipping on Receiver
+    // Limit in-browser ZIP extraction to archives <= 64 MB (64 * 1024 * 1024 bytes)
+    // For archives > 64 MB, download the .zip directly to prevent tab crash/OOM
     let extractedFiles = [];
+    const MAX_IN_MEMORY_ZIP_UNPACK_SIZE = 64 * 1024 * 1024;
+
     if (result.name.endsWith('.zip')) {
-      updateBadge('Unzipping files...', 'badge-info');
-      try {
-        extractedFiles = await extractZipArchive(result.data);
-        console.log(`[P2P] Receiver: Unzipped ${extractedFiles.length} files from ${result.name}!`);
-      } catch (zipErr) {
-        console.warn('[P2P] Failed to unzip archive:', zipErr);
+      if (blob.size <= MAX_IN_MEMORY_ZIP_UNPACK_SIZE) {
+        updateBadge('Unzipping files...', 'badge-info');
+        try {
+          const zipBuffer = result.data instanceof Blob
+            ? new Uint8Array(await result.data.arrayBuffer())
+            : result.data;
+          extractedFiles = await extractZipArchive(zipBuffer);
+          console.log(`[P2P] Receiver: Unzipped ${extractedFiles.length} files from ${result.name}!`);
+        } catch (zipErr) {
+          console.warn('[P2P] Failed to unzip archive:', zipErr);
+        }
+      } else {
+        console.log(`[P2P] ZIP archive (${Math.round(blob.size / 1024 / 1024)}MB) exceeds memory limit for in-browser extraction. Direct download enabled.`);
       }
     }
 
@@ -1037,6 +1082,8 @@ async function finalizeReceiverTransfer() {
         reason: `Verification failed on receiver: ${err.message}`
       });
     } catch {}
+  } finally {
+    isFinalizingTransfer = false;
   }
 }
 
@@ -1611,6 +1658,7 @@ function setupEventListeners() {
 }
 
 function resetToInitialState() {
+  isFinalizingTransfer = false;
   if (activeDownloadUrl) {
     try { URL.revokeObjectURL(activeDownloadUrl); } catch {}
     activeDownloadUrl = null;
