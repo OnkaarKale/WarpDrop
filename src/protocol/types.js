@@ -28,7 +28,8 @@ export const ControlActions = Object.freeze({
   PAUSE: 'PAUSE',
   RESUME: 'RESUME',
   CANCEL: 'CANCEL',
-  COMPLETE: 'COMPLETE'
+  COMPLETE: 'COMPLETE',
+  DOWNLOAD_ACK: 'DOWNLOAD_ACK'
 });
 
 // Signaling Message Types (shared across transport and signaling)
@@ -39,6 +40,8 @@ export const SignalingMessageTypes = Object.freeze({
   SDP_ANSWER: 'SDP_ANSWER',
   ICE_CANDIDATE: 'ICE_CANDIDATE',
   PEER_LEFT: 'PEER_LEFT',
+  PING: 'PING',
+  PONG: 'PONG',
   ERROR: 'ERROR'
 });
 

@@ -306,4 +306,33 @@ test('Signaling Server Test Suite', async (t) => {
       client.ws.close();
     });
   });
+
+  await t.test('Signaling Keepalive & Heartbeat', async (t2) => {
+    await t2.test('responds with PONG to client PING keepalive message', async () => {
+      const { sessionId, token } = signalingServer.createSession();
+      const client = await connectClient(port);
+
+      // Join session
+      client.ws.send(JSON.stringify({
+        type: SignalingMessageTypes.JOIN,
+        sessionId,
+        peerId: 'peer-ping-tester',
+        token
+      }));
+
+      // Send PING
+      client.ws.send(JSON.stringify({
+        type: SignalingMessageTypes.PING,
+        sessionId,
+        peerId: 'peer-ping-tester',
+        token
+      }));
+
+      const pongMsg = await waitForMessage(client.messages, (m) => m.type === SignalingMessageTypes.PONG);
+      assert.equal(pongMsg.type, SignalingMessageTypes.PONG);
+      assert.equal(pongMsg.sessionId, sessionId);
+
+      client.ws.close();
+    });
+  });
 });

@@ -159,6 +159,7 @@ const progressFill = document.getElementById('progress-fill');
 const progressPercent = document.getElementById('progress-percent');
 const progressSpeed = document.getElementById('progress-speed');
 const progressEta = document.getElementById('progress-eta');
+const transferStatusMessage = document.getElementById('transfer-status-message');
 const cancelTransferBtn = document.getElementById('cancel-transfer-btn');
 
 // Complete View Elements
@@ -533,6 +534,11 @@ async function startPeerConnection({ role, sessionId, token, host, port }) {
   });
 
   transport.on('error', (err) => {
+    // Suppress non-fatal transport warnings if WebRTC DataChannel is actively transferring or verifying
+    if (transport && transport.isOpen() && (ui.getState() === UIStates.TRANSFERRING || ui.getState() === UIStates.VERIFYING)) {
+      console.warn('[P2P] Suppressed non-fatal transport error during active transfer:', err.message);
+      return;
+    }
     showAlert(`Connection error: ${err.message}`);
     updateBadge('Failed', 'badge-danger');
     ui.error(err.message);
@@ -543,6 +549,11 @@ async function startPeerConnection({ role, sessionId, token, host, port }) {
   });
 
   transport.on('signalingClose', () => {
+    // If WebRTC DataChannel is active and transferring/verifying, do not disrupt ongoing P2P transfer
+    if (transport && transport.isOpen() && (ui.getState() === UIStates.TRANSFERRING || ui.getState() === UIStates.VERIFYING)) {
+      console.log('[P2P] Signaling channel closed, but WebRTC DataChannel is active.');
+      return;
+    }
     if (
       role === 'responder' &&
       currentSession &&
@@ -755,7 +766,25 @@ async function handleControlFrame(frame) {
     }
 
     case ControlActions.COMPLETE: {
+      console.log('[P2P] Received COMPLETE control frame: sender finished transmitting all chunks.');
+      if (reassembler && reassembler.isComplete()) {
+        // Reassembly complete; receiver finalization is in progress or completed
+      } else {
+        updateBadge('Receiving final data...', 'badge-info');
+      }
+      break;
+    }
+
+    case ControlActions.DOWNLOAD_ACK: {
+      console.log('[P2P] Sender received DOWNLOAD_ACK from peer! Peer verified & saved:', msg);
+      if (transferStatusMessage) {
+        transferStatusMessage.classList.add('hidden');
+        transferStatusMessage.textContent = '';
+      }
+      ui.transition(UIStates.COMPLETED);
       showCompleteView(msg.name, msg.size, msg.sha256);
+      updateBadge('Transferred & Saved!', 'badge-success');
+      showAlert(`✓ Transfer complete! Recipient automatically downloaded & verified ${msg.name}.`, 'success');
       break;
     }
 
@@ -835,8 +864,13 @@ async function startSenderStreaming() {
         size: manifest.size,
         sha256: manifest.sha256
       });
-      console.log('[P2P] Sender: file streaming complete!');
-      showCompleteView(manifest.name, manifest.size, manifest.sha256);
+      console.log('[P2P] Sender: all chunks sent. Waiting for peer to verify & download...');
+      updateBadge('Saving on Peer...', 'badge-info');
+      transferTitle.textContent = 'Saving on Peer Device...';
+      if (transferStatusMessage) {
+        transferStatusMessage.classList.remove('hidden');
+        transferStatusMessage.innerHTML = '⏳ <strong>All data sent!</strong> Waiting for recipient to verify & save file...';
+      }
     }
   } catch (err) {
     console.error('[P2P] Sender streaming error:', err);
@@ -931,6 +965,10 @@ function triggerDirectDownload(url, filename) {
 async function finalizeReceiverTransfer() {
   ui.transition(UIStates.VERIFYING);
   updateBadge('Verifying SHA-256...', 'badge-info');
+  if (transferStatusMessage) {
+    transferStatusMessage.classList.remove('hidden');
+    transferStatusMessage.innerHTML = '🔍 <strong>Verifying file integrity (SHA-256)...</strong>';
+  }
 
   try {
     const result = await reassembler.finalize();
@@ -977,10 +1015,28 @@ async function finalizeReceiverTransfer() {
     }
 
     updateBadge('Downloaded!', 'badge-success');
+
+    // Automatically send DOWNLOAD_ACK to sender so sender knows peer verified and saved file
+    try {
+      await sendControlMessage(ControlActions.DOWNLOAD_ACK, {
+        name: result.name,
+        size: blob.size,
+        sha256: reassembler.manifest.sha256,
+        status: 'OK'
+      });
+      console.log('[P2P] Receiver: Sent DOWNLOAD_ACK to sender');
+    } catch (ackErr) {
+      console.warn('[P2P] Could not send DOWNLOAD_ACK to peer:', ackErr);
+    }
   } catch (err) {
     console.error('[P2P] Receiver finalization error:', err);
     showAlert(`Integrity verification failed: ${err.message}`);
     ui.error(err.message);
+    try {
+      await sendControlMessage(ControlActions.CANCEL, {
+        reason: `Verification failed on receiver: ${err.message}`
+      });
+    } catch {}
   }
 }
 
@@ -1018,6 +1074,11 @@ function showTransferView(title) {
   panelReceive.classList.add('hidden');
   viewComplete.classList.add('hidden');
   viewTransferring.classList.remove('hidden');
+
+  if (transferStatusMessage) {
+    transferStatusMessage.classList.add('hidden');
+    transferStatusMessage.textContent = '';
+  }
 
   transferTitle.textContent = title;
   transferDirectionBadge.textContent = currentRole === 'sender' ? 'Sending' : 'Receiving';
@@ -1119,6 +1180,10 @@ function renderFolderExplorer(extractedFiles, filterQuery = '') {
 }
 
 function showCompleteView(name, size, sha256, extractedFiles = []) {
+  if (transferStatusMessage) {
+    transferStatusMessage.classList.add('hidden');
+    transferStatusMessage.textContent = '';
+  }
   viewTransferring.classList.add('hidden');
   viewComplete.classList.remove('hidden');
 
@@ -1565,6 +1630,10 @@ function resetToInitialState() {
 
   viewTransferring.classList.add('hidden');
   viewComplete.classList.add('hidden');
+  if (transferStatusMessage) {
+    transferStatusMessage.classList.add('hidden');
+    transferStatusMessage.textContent = '';
+  }
   panelSend.classList.remove('hidden');
   panelReceive.classList.add('hidden');
 

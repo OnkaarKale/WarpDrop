@@ -244,6 +244,18 @@ export class SignalingServer {
     }
 
     session.lastActive = Date.now();
+    ws.isAlive = true;
+
+    // Handle keepalive ping from client
+    if (type === SignalingMessageTypes.PING || type === 'PING') {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: SignalingMessageTypes.PONG,
+          sessionId
+        }));
+      }
+      return;
+    }
 
     if (type === SignalingMessageTypes.JOIN) {
       console.log(`[Signaling] Peer '${peerId}' joined session '${sessionId}'. Total peers in room: ${session.peers.size + 1}`);

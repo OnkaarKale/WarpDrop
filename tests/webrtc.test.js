@@ -876,4 +876,47 @@ test('WebRTC DataChannel P2P Transport Test Suite', async (t) => {
       conn.close();
     });
   });
+
+  await t.test('Two-Way Download Handshake & Keepalive', async (t2) => {
+    await t2.test('ControlActions includes DOWNLOAD_ACK action', () => {
+      assert.equal(ControlActions.DOWNLOAD_ACK, 'DOWNLOAD_ACK');
+    });
+
+    await t2.test('WebRTCPeerTransport handles PONG message without error', async () => {
+      class MockSimpleSocket extends EventEmitter {
+        constructor() {
+          super();
+          this.readyState = 1;
+        }
+        send() {}
+        close() { this.readyState = 3; this.emit('close'); }
+      }
+
+      const socket = new MockSimpleSocket();
+      const transport = new WebRTCPeerTransport({
+        isInitiator: true,
+        sessionId: 'session-keepalive-test',
+        token: 'token-keepalive',
+        peerId: 'peer-alice',
+        ws: socket,
+        RTCPeerConnection: MockRTCPeerConnection
+      });
+
+      let errorFired = false;
+      transport.on('error', () => { errorFired = true; });
+
+      await transport.connect();
+
+      // Emit PONG message from signaling server
+      socket.emit('message', JSON.stringify({
+        type: 'PONG',
+        sessionId: 'session-keepalive-test'
+      }));
+
+      assert.equal(errorFired, false, 'PONG must not trigger error in WebRTCPeerTransport');
+      assert.equal(transport.closed, false, 'Transport must remain open after PONG');
+
+      transport.close();
+    });
+  });
 });

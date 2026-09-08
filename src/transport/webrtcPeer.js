@@ -67,6 +67,7 @@ export class WebRTCPeerTransport {
 
     this.listeners = new Map();
     this.closed = false;
+    this.heartbeatTimer = null;
 
     this._bindWebRTCListeners();
   }
@@ -129,6 +130,7 @@ export class WebRTCPeerTransport {
         peerId: this.peerId,
         token: this.token
       });
+      this._startSignalingHeartbeat();
       return;
     }
 
@@ -141,6 +143,7 @@ export class WebRTCPeerTransport {
           peerId: this.peerId,
           token: this.token
         });
+        this._startSignalingHeartbeat();
         resolve();
       };
 
@@ -186,6 +189,7 @@ export class WebRTCPeerTransport {
     if (this.closed) return;
     this.closed = true;
 
+    this._stopSignalingHeartbeat();
     this.webrtcConn.close();
 
     if (this.ws) {
@@ -251,7 +255,12 @@ export class WebRTCPeerTransport {
       }
     });
 
+    on('open', () => {
+      this._startSignalingHeartbeat();
+    });
+
     on('close', (event) => {
+      this._stopSignalingHeartbeat();
       if (!this.closed) {
         this.emit('signalingClose', {
           code: event?.code || 1000,
@@ -261,7 +270,13 @@ export class WebRTCPeerTransport {
     });
 
     on('error', (err) => {
+      this._stopSignalingHeartbeat();
       if (!this.closed) {
+        // If WebRTC connection is already established and open, non-fatal signaling errors shouldn't crash P2P transfer
+        if (this.webrtcConn && this.webrtcConn.isOpen()) {
+          console.warn('[Signaling] Non-fatal signaling socket error while DataChannel is open:', err?.message || 'unknown');
+          return;
+        }
         this.emit('error', new Error(`Signaling error: ${err?.message || 'unknown'}`));
       }
     });
@@ -269,6 +284,10 @@ export class WebRTCPeerTransport {
 
   async _handleSignalingMessage(msg) {
     if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === SignalingMessageTypes.PONG || msg.type === 'PONG') {
+      return;
+    }
 
     // If counterpart peer joins or reconnects, bind the new target peer ID
     if (msg.type === SignalingMessageTypes.PEER_JOINED && msg.peerId !== this.peerId) {
@@ -396,5 +415,33 @@ export class WebRTCPeerTransport {
       return;
     }
     this.ws.send(JSON.stringify(obj));
+  }
+
+  _startSignalingHeartbeat() {
+    this._stopSignalingHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.closed && this.ws && this.ws.readyState === 1 /* OPEN */) {
+        try {
+          this._sendSignalingMessage({
+            type: SignalingMessageTypes.PING,
+            sessionId: this.sessionId,
+            peerId: this.peerId,
+            token: this.token
+          });
+        } catch {
+          // Ignored
+        }
+      }
+    }, 15000);
+    if (this.heartbeatTimer && typeof this.heartbeatTimer.unref === 'function') {
+      this.heartbeatTimer.unref();
+    }
+  }
+
+  _stopSignalingHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 }
