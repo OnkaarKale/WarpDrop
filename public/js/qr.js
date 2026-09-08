@@ -228,15 +228,35 @@ export class QRScanner {
         throw new Error('Camera access is not supported by your browser');
       }
 
-      // Request rear camera on mobile devices with fallback
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      });
+      // Request rear camera on mobile devices with HD resolution and fallback
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          audio: false
+        });
+      } catch {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' }
+          },
+          audio: false
+        });
+      }
+
+      // Enable continuous autofocus if supported by mobile camera hardware
+      try {
+        const track = this.stream.getVideoTracks()[0];
+        if (track && typeof track.getCapabilities === 'function') {
+          const capabilities = track.getCapabilities() || {};
+          if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+            await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+          }
+        }
+      } catch {}
 
       if (!this.isScanning) {
         this._stopTracks();

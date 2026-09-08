@@ -911,16 +911,22 @@ input[type="number"]:focus {
   height: 100%;
   background-color: rgba(15, 23, 42, 0.75);
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1;
 }
 
 .modal-content {
   position: relative;
+  z-index: 10;
   background-color: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   padding: 24px;
   width: 100%;
   max-width: 440px;
+  max-height: 90vh;
+  max-height: 90dvh;
+  overflow-y: auto;
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
@@ -1145,11 +1151,16 @@ a:hover {
   color: #60a5fa;
 }
 
-/* Ensure modal backdrop blurs properly with Bootstrap */
+/* Ensure modal backdrop blurs properly with Bootstrap while staying behind content */
 .modal-backdrop {
   background-color: rgba(15, 23, 42, 0.8) !important;
   backdrop-filter: blur(6px) !important;
   -webkit-backdrop-filter: blur(6px) !important;
+  z-index: 1 !important;
+}
+
+.modal-content {
+  z-index: 10 !important;
 }
 
 /* Bootstrap progress bar overrides */
@@ -1403,14 +1414,19 @@ a:hover {
   /* Modals on Mobile */
   .modal {
     padding: 10px;
-    align-items: flex-end;
+    align-items: center;
+    z-index: 1055;
   }
 
   .modal-content {
-    padding: 18px 14px;
+    padding: 16px 14px;
     max-width: 100%;
+    max-height: 90vh;
+    max-height: 90dvh;
+    overflow-y: auto;
     border-radius: var(--radius-md);
-    margin-bottom: max(8px, env(safe-area-inset-bottom));
+    margin-bottom: 0;
+    z-index: 10 !important;
   }
 
   .modal-actions .btn {
@@ -1428,7 +1444,8 @@ a:hover {
 
   /* Video Viewfinder */
   .video-viewfinder-container {
-    aspect-ratio: 1 / 1;
+    aspect-ratio: 4 / 3;
+    max-height: 240px;
   }
 }
 
