@@ -270,9 +270,26 @@ export class WebRTCPeerTransport {
   async _handleSignalingMessage(msg) {
     if (!msg || typeof msg !== 'object') return;
 
-    // Reject messages from other peers or messages lacking peerId once target peer is established
-    if (this.targetPeerId && msg.type !== SignalingMessageTypes.ERROR) {
-      if (msg.peerId !== this.targetPeerId) {
+    // If counterpart peer joins or reconnects, bind the new target peer ID
+    if (msg.type === SignalingMessageTypes.PEER_JOINED && msg.peerId !== this.peerId) {
+      this.targetPeerId = msg.peerId;
+    }
+
+    // Allow renegotiated SDP offer from legitimate sender reconnecting to update targetPeerId
+    if (msg.type === SignalingMessageTypes.SDP_OFFER && !this.isInitiator && typeof msg.peerId === 'string' && msg.peerId.startsWith('tx-')) {
+      this.targetPeerId = msg.peerId;
+    }
+
+    // Reject rogue SDP/ICE messages from unexpected peers or messages lacking peerId once target peer is established
+    const isMediaNegotiation =
+      msg.type === SignalingMessageTypes.SDP_OFFER ||
+      msg.type === SignalingMessageTypes.SDP_ANSWER ||
+      msg.type === SignalingMessageTypes.ICE_CANDIDATE;
+
+    if (isMediaNegotiation) {
+      if (!this.targetPeerId) {
+        this.targetPeerId = msg.peerId;
+      } else if (msg.peerId !== this.targetPeerId) {
         this.emit(
           'error',
           new Error(
@@ -287,9 +304,7 @@ export class WebRTCPeerTransport {
       case SignalingMessageTypes.PEER_JOINED: {
         // Notification that a peer joined
         if (msg.peerId !== this.peerId) {
-          if (!this.targetPeerId) {
-            this.targetPeerId = msg.peerId;
-          }
+          this.targetPeerId = msg.peerId;
           this.emit('peerJoined', msg.peerId);
 
           if (this.isInitiator) {
@@ -360,7 +375,10 @@ export class WebRTCPeerTransport {
 
       case SignalingMessageTypes.PEER_LEFT: {
         this.emit('peerLeft', msg.peerId);
-        if (!this.webrtcConn.isOpen()) {
+        if (this.targetPeerId === msg.peerId) {
+          this.targetPeerId = null;
+        }
+        if (!this.webrtcConn.isOpen() && this.role !== 'responder') {
           this.close();
         }
         break;
