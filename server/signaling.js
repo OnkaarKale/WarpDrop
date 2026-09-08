@@ -275,16 +275,50 @@ export class SignalingServer {
   }
 
   _handleJoin(ws, session, sessionId, peerId) {
-    // Room capacity limit: max 2 peers
+    // 1. Prune any dead, closed, or non-open sockets in this session
+    for (const [existingId, record] of session.peers.entries()) {
+      if (!record.ws || record.ws.readyState !== WebSocket.OPEN) {
+        session.peers.delete(existingId);
+      }
+    }
+
+    // 2. If the same WebSocket is re-joining under a new peerId, remove its old registration
+    for (const [existingId, record] of session.peers.entries()) {
+      if (record.ws === ws && existingId !== peerId) {
+        session.peers.delete(existingId);
+      }
+    }
+
+    // 3. Self-healing role replacement:
+    // Receiver peer IDs are prefixed with 'rx-' and sender peer IDs with 'tx-'.
+    // If a new 'rx-' or 'tx-' peer joins with the valid session token, replace any stale connection of that same role.
+    const isRx = typeof peerId === 'string' && peerId.startsWith('rx-');
+    const isTx = typeof peerId === 'string' && peerId.startsWith('tx-');
+    if (isRx || isTx) {
+      const prefix = isRx ? 'rx-' : 'tx-';
+      for (const [existingId, record] of session.peers.entries()) {
+        if (existingId !== peerId && existingId.startsWith(prefix)) {
+          console.log(`[Signaling] Replacing stale ${prefix} peer '${existingId}' with new peer '${peerId}'`);
+          try {
+            record.ws.close(4000, 'Replaced by newer peer connection');
+          } catch {}
+          session.peers.delete(existingId);
+        }
+      }
+    }
+
+    // 4. Room capacity limit: max 2 peers
     if (session.peers.size >= 2 && !session.peers.has(peerId)) {
       this._sendError(ws, 'Session is full (maximum 2 peers)', sessionId);
       return;
     }
 
-    // Duplicate peer ID check in same session
+    // 5. Duplicate peer ID check in same session
     if (session.peers.has(peerId) && session.peers.get(peerId).ws !== ws) {
-      this._sendError(ws, 'Peer ID already in use in this session', sessionId);
-      return;
+      try {
+        session.peers.get(peerId).ws.close(4000, 'Replaced by duplicate peerId connection');
+      } catch {}
+      session.peers.delete(peerId);
     }
 
     // Register peer

@@ -543,10 +543,23 @@ async function startPeerConnection({ role, sessionId, token, host, port }) {
   });
 
   transport.on('signalingClose', () => {
-    if (role === 'responder' && currentSession && !isCancelled && ui.getState() !== UIStates.TRANSFERRING && ui.getState() !== UIStates.COMPLETED) {
+    if (
+      role === 'responder' &&
+      currentSession &&
+      !isCancelled &&
+      ui.getState() !== UIStates.TRANSFERRING &&
+      ui.getState() !== UIStates.COMPLETED &&
+      ui.getState() !== UIStates.ERROR
+    ) {
       updateBadge('Reconnecting...', 'badge-info');
       setTimeout(() => {
-        if (role === 'responder' && currentSession && !isCancelled && ui.getState() !== UIStates.TRANSFERRING) {
+        if (
+          role === 'responder' &&
+          currentSession &&
+          !isCancelled &&
+          ui.getState() !== UIStates.TRANSFERRING &&
+          ui.getState() !== UIStates.ERROR
+        ) {
           startPeerConnection({
             role: 'responder',
             sessionId: currentSession.sessionId,
@@ -1477,6 +1490,11 @@ function setupEventListeners() {
   // New Code / Refresh Session Button
   if (refreshSessionBtn) {
     refreshSessionBtn.addEventListener('click', () => {
+      if (transport) {
+        try { transport.close(); } catch {}
+        transport = null;
+      }
+      ui.reset();
       initReceiverSession();
     });
   }
