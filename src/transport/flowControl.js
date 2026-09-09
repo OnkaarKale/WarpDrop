@@ -5,14 +5,14 @@
  * Monitors `bufferedAmount` against high and low water marks.
  */
 
-export const DEFAULT_HIGH_WATER_MARK = 1024 * 1024; // 1 MB
-export const DEFAULT_LOW_WATER_MARK = 256 * 1024;  // 256 KB
+export const DEFAULT_HIGH_WATER_MARK = 256 * 1024; // 256 KB (Wi-Fi safe, anti-bufferbloat)
+export const DEFAULT_LOW_WATER_MARK = 64 * 1024;   // 64 KB
 
 export class FlowController {
   /**
    * @param {Object} [options]
-   * @param {number} [options.highWaterMark=1048576] - Maximum buffered bytes before pausing
-   * @param {number} [options.lowWaterMark=262144]  - Threshold to resume sending
+   * @param {number} [options.highWaterMark=262144] - Maximum buffered bytes before pausing
+   * @param {number} [options.lowWaterMark=65536]   - Threshold to resume sending
    */
   constructor({
     highWaterMark = DEFAULT_HIGH_WATER_MARK,

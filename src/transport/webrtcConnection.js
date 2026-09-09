@@ -23,11 +23,29 @@ export const MAX_TRANSPORT_FRAME_SIZE = 18 + MAX_CHUNK_SIZE + 16;
 // Maximum number of ICE candidates permitted per session to prevent queue/memory exhaustion
 export const MAX_ICE_CANDIDATES = 100;
 
-// Default public STUN servers for NAT traversal across different networks
+// Default public STUN and TURN relay servers for NAT traversal across different networks and mobile 5G/4G CGNAT
 export const DEFAULT_RTC_CONFIG = Object.freeze({
   iceServers: [
+    // 1. Primary Google STUN servers for direct P2P hole-punching
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:openrelay.metered.ca:80' },
+    // 2. OpenRelay (Metered) public TURN relay servers for symmetric NAT / mobile 5G fallback
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelay',
+      credential: 'openrelay'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelay',
+      credential: 'openrelay'
+    },
+    {
+      urls: 'turns:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelay',
+      credential: 'openrelay'
+    }
   ]
 });
 
