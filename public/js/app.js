@@ -499,6 +499,20 @@ async function startPeerConnection({ role, sessionId, token, host, port }) {
   localKeyPair = await generateSessionKeyPair();
   localPubKeyB64 = await exportPublicKey(localKeyPair.publicKey);
 
+  // Dynamic ICE server configuration from backend
+  let rtcConfig = undefined;
+  try {
+    const iceRes = await fetch('/api/ice-servers');
+    if (iceRes.ok) {
+      const iceData = await iceRes.json();
+      if (Array.isArray(iceData?.iceServers) && iceData.iceServers.length > 0) {
+        rtcConfig = { iceServers: iceData.iceServers };
+      }
+    }
+  } catch (iceErr) {
+    console.warn('[P2P] Dynamic ICE resolution fallback to default:', iceErr.message);
+  }
+
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const isStandardPort = (protocol === 'wss:' && (port === 443 || !port)) || (protocol === 'ws:' && (port === 80 || !port));
   const signalingUrl = isStandardPort ? `${protocol}//${host}` : `${protocol}//${host}:${port}`;
@@ -508,14 +522,17 @@ async function startPeerConnection({ role, sessionId, token, host, port }) {
     sessionId,
     peerId: localPeerId,
     token,
-    signalingUrl
+    signalingUrl,
+    rtcConfig
   });
 
   transport.on('open', async () => {
-    updateBadge('Connected', 'badge-success');
+    const mode = transport.getTransportMode ? transport.getTransportMode() : 'p2p';
+    const badgeText = mode === 'tunnel' ? 'Connected (Relay)' : 'Connected (P2P)';
+    updateBadge(badgeText, 'badge-success');
     ui.transition(UIStates.CONNECTED);
 
-    // Initial ECDH public key exchange over DataChannel
+    // Initial ECDH public key exchange over DataChannel or Tunnel
     if (!handshakeSent) {
       handshakeSent = true;
       const handshakePayload = new TextEncoder().encode(
@@ -530,14 +547,25 @@ async function startPeerConnection({ role, sessionId, token, host, port }) {
     }
   });
 
+  transport.on('modeChange', (mode) => {
+    if (ui.getState() === UIStates.CONNECTED || ui.getState() === UIStates.TRANSFERRING) {
+      updateBadge(mode === 'tunnel' ? 'Connected (Relay)' : 'Connected (P2P)', 'badge-success');
+    }
+  });
+
   transport.on('frame', async (frameData) => {
     await handleIncomingFrame(frameData);
   });
 
   transport.on('error', (err) => {
-    // Suppress non-fatal transport warnings if WebRTC DataChannel is actively transferring or verifying
-    if (transport && transport.isOpen() && (ui.getState() === UIStates.TRANSFERRING || ui.getState() === UIStates.VERIFYING)) {
-      console.warn('[P2P] Suppressed non-fatal transport error during active transfer:', err.message);
+    // Suppress non-fatal transport warnings if connection (P2P or Tunnel) is actively transferring or verifying
+    if (transport && transport.isOpen()) {
+      console.warn('[P2P] Suppressed non-fatal transport error while connection is open:', err.message);
+      return;
+    }
+    const msg = (err?.message || '').toLowerCase();
+    if (msg.includes('rtcpeerconnection failed') || msg.includes('ice connection failed')) {
+      console.warn('[P2P] Suppressed non-fatal ICE error; fallback to tunnel in progress:', err.message);
       return;
     }
     showAlert(`Connection error: ${err.message}`);

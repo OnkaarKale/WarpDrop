@@ -33,6 +33,62 @@ const mimeTypes = {
   '.ico': 'image/x-icon'
 };
 
+const DEFAULT_STUN_SERVERS = Object.freeze([
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' }
+]);
+
+let cachedMeteredIce = null;
+let cachedMeteredExpires = 0;
+
+export async function getIceServers() {
+  const iceServers = [...DEFAULT_STUN_SERVERS];
+
+  // 1. Custom static TURN via environment variables
+  if (process.env.TURN_URLS) {
+    const urls = process.env.TURN_URLS.split(',').map((u) => u.trim()).filter(Boolean);
+    if (urls.length > 0) {
+      const turnEntry = { urls };
+      if (process.env.TURN_USERNAME) {
+        turnEntry.username = process.env.TURN_USERNAME;
+      }
+      if (process.env.TURN_CREDENTIAL) {
+        turnEntry.credential = process.env.TURN_CREDENTIAL;
+      }
+      iceServers.push(turnEntry);
+    }
+  }
+
+  // 2. Metered.ca dynamic TURN API via METERED_API_KEY
+  if (process.env.METERED_API_KEY) {
+    const now = Date.now();
+    if (cachedMeteredIce && now < cachedMeteredExpires) {
+      return cachedMeteredIce;
+    }
+
+    try {
+      const appName = process.env.METERED_APP_NAME || 'warpdrop';
+      const apiUrl = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${process.env.METERED_API_KEY}`;
+      const response = await fetch(apiUrl, { signal: AbortSignal.timeout(4000) });
+      if (response.ok) {
+        const meteredServers = await response.json();
+        if (Array.isArray(meteredServers) && meteredServers.length > 0) {
+          cachedMeteredIce = [...DEFAULT_STUN_SERVERS, ...meteredServers];
+          cachedMeteredExpires = now + 10 * 60 * 1000; // Cache for 10 minutes
+          return cachedMeteredIce;
+        }
+      }
+    } catch (err) {
+      console.warn('[ICE] Failed to fetch Metered dynamic TURN credentials:', err.message);
+    }
+  }
+
+  return iceServers;
+}
+
 /**
  * Hardened HTTP request handler for static files and ephemeral session generation.
  */
@@ -74,7 +130,31 @@ function handleHttpRequest(req, res, context = {}) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
 
-  // 2. Handle REST API: GET /api/session
+  // 2. Handle REST API: GET /api/ice-servers
+  if (rawPathname === '/api/ice-servers') {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'text/plain' });
+      res.end('Method Not Allowed');
+      return;
+    }
+
+    getIceServers()
+      .then((iceServers) => {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'public, max-age=300'
+        });
+        res.end(JSON.stringify({ iceServers }));
+      })
+      .catch((err) => {
+        console.warn('[HTTP] Failed to resolve dynamic ICE servers:', err.message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ iceServers: DEFAULT_STUN_SERVERS }));
+      });
+    return;
+  }
+
+  // 3. Handle REST API: GET /api/session
   if (rawPathname === '/api/session') {
     if (req.method !== 'GET') {
       res.writeHead(405, { 'Content-Type': 'text/plain' });

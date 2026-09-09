@@ -29,7 +29,7 @@ export class SignalingServer {
    */
   constructor({ server, port, sessionTimeoutMs = 600000, persistFilePath } = {}) {
     this.sessionTimeoutMs = sessionTimeoutMs;
-    this.rateLimiter = new RateLimiter({ maxTokens: 40, refillRatePerSec: 15 });
+    this.rateLimiter = new RateLimiter({ maxTokens: 500, refillRatePerSec: 250 });
 
     // In-memory ephemeral sessions: sessionId -> { token, peers: Map<peerId, { ws, peerId }>, lastActive }
     this.sessions = new Map();
@@ -276,7 +276,9 @@ export class SignalingServer {
       return;
     }
 
-    console.log(`[Signaling] Forwarded ${type} from ${peerId} to ${otherPeer.peerId}`);
+    if (type !== SignalingMessageTypes.TUNNEL_FRAME) {
+      console.log(`[Signaling] Forwarded ${type} from ${peerId} to ${otherPeer.peerId}`);
+    }
     // Forward message strictly to the counterpart peer
     otherPeer.ws.send(JSON.stringify({
       type,

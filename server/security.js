@@ -5,7 +5,7 @@
  * strict size caps, and connection rate limiting.
  */
 
-export const MAX_SIGNALING_MESSAGE_SIZE = 64 * 1024; // 64 KB (strictly sufficient for SDP / ICE)
+export const MAX_SIGNALING_MESSAGE_SIZE = 64 * 1024; // 64 KB (supports SDP, ICE, and fragmented tunnel frames)
 
 import { SignalingMessageTypes } from '../src/protocol/types.js';
 export { SignalingMessageTypes };
@@ -166,6 +166,18 @@ export function validateSignalingMessage(msg) {
     }
     if (typeof payload.candidate !== 'string' || payload.candidate.length > 2 * 1024) {
       return { valid: false, error: 'Invalid ICE candidate payload' };
+    }
+  }
+
+  if (type === SignalingMessageTypes.TUNNEL_FRAME) {
+    if (!payload || typeof payload !== 'object') {
+      return { valid: false, error: 'TUNNEL_FRAME requires payload object' };
+    }
+    if (typeof payload.frame !== 'string' || payload.frame.length === 0) {
+      return { valid: false, error: 'Invalid TUNNEL_FRAME: frame must be a non-empty string' };
+    }
+    if (payload.frame.length > 60 * 1024) {
+      return { valid: false, error: 'Invalid TUNNEL_FRAME: frame exceeds maximum payload size' };
     }
   }
 

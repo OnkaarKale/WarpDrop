@@ -9,7 +9,8 @@ import {
 } from '../server/signaling.js';
 
 import {
-  SignalingMessageTypes
+  SignalingMessageTypes,
+  MAX_SIGNALING_MESSAGE_SIZE
 } from '../server/security.js';
 
 // Helper to create a client WebSocket connection
@@ -265,7 +266,7 @@ test('Signaling Server Test Suite', async (t) => {
 
     await t2.test('rejects oversized JSON message exceeding maximum signaling limit', async () => {
       const client = await connectClient(port);
-      const hugeString = 'x'.repeat(70 * 1024); // 70 KB exceeds 64 KB limit
+      const hugeString = 'x'.repeat(MAX_SIGNALING_MESSAGE_SIZE + 10 * 1024); // Exceeds limit
 
       const closePromise = new Promise((resolve) => {
         client.ws.on('close', (code, reason) => {

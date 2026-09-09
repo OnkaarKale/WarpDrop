@@ -919,4 +919,147 @@ test('WebRTC DataChannel P2P Transport Test Suite', async (t) => {
       transport.close();
     });
   });
+
+  await t.test('Dual-Mode Hybrid Transport & Zero-Knowledge Tunnel Fallback', async (t2) => {
+    class MockSimpleSocket extends EventEmitter {
+      constructor() {
+        super();
+        this.readyState = 1;
+        this.sent = [];
+      }
+      send(data) {
+        this.sent.push(JSON.parse(data));
+      }
+      close() {
+        this.readyState = 3;
+        this.emit('close');
+      }
+    }
+
+    await t2.test('tracks transportMode and operates in forceTunnel mode', async () => {
+      const socket = new MockSimpleSocket();
+      const transport = new WebRTCPeerTransport({
+        role: 'initiator',
+        sessionId: 'session-tunnel-1',
+        token: 'token-tunnel',
+        peerId: 'peer-alice-tunnel',
+        targetPeerId: 'peer-bob-tunnel',
+        ws: socket,
+        forceTunnel: true,
+        RTCPeerConnection: MockRTCPeerConnection
+      });
+
+      assert.equal(transport.getTransportMode(), 'tunnel');
+      assert.equal(transport.isOpen(), true);
+      assert.equal(transport.getState(), 'CONNECTED');
+
+      // Send binary frame over tunnel
+      const payload = new Uint8Array([0x50, 0x32, 0x01, 0x10, 0x20]);
+      await transport.send(payload);
+
+      assert.ok(socket.sent.length > 0);
+      const sentMsg = socket.sent.find((m) => m.type === 'TUNNEL_FRAME');
+      assert.ok(sentMsg);
+      assert.equal(sentMsg.targetPeerId, 'peer-bob-tunnel');
+      assert.ok(typeof sentMsg.payload.frame === 'string');
+
+      transport.close();
+    });
+
+    await t2.test('transfers fragmented frames over tunnel and reassembles them', async () => {
+      const socketAlice = new MockSimpleSocket();
+      const socketBob = new MockSimpleSocket();
+
+      const alice = new WebRTCPeerTransport({
+        role: 'initiator',
+        sessionId: 'session-frag-test',
+        token: 'token-frag',
+        peerId: 'peer-alice',
+        targetPeerId: 'peer-bob',
+        ws: socketAlice,
+        forceTunnel: true,
+        RTCPeerConnection: MockRTCPeerConnection
+      });
+
+      const bob = new WebRTCPeerTransport({
+        role: 'responder',
+        sessionId: 'session-frag-test',
+        token: 'token-frag',
+        peerId: 'peer-bob',
+        targetPeerId: 'peer-alice',
+        ws: socketBob,
+        forceTunnel: true,
+        RTCPeerConnection: MockRTCPeerConnection
+      });
+
+      await alice.connect();
+      await bob.connect();
+
+      // 80 KB payload (exceeds single 32 KB fragment limit)
+      const bigPayload = new Uint8Array(80 * 1024);
+      for (let i = 0; i < bigPayload.length; i++) {
+        bigPayload[i] = i % 256;
+      }
+
+      const receivedPromise = new Promise((resolve) => {
+        bob.on('frame', (data) => resolve(data));
+      });
+
+      await alice.send(bigPayload);
+
+      // Forward messages from Alice's socket to Bob's socket
+      const tunnelMsgs = socketAlice.sent.filter((m) => m.type === 'TUNNEL_FRAME');
+      assert.ok(tunnelMsgs.length > 1, '80KB payload must be fragmented into multiple messages');
+
+      for (const msg of tunnelMsgs) {
+        socketBob.emit('message', JSON.stringify(msg));
+      }
+
+      const received = await receivedPromise;
+      assert.equal(received.byteLength, bigPayload.byteLength);
+      assert.deepEqual(received, bigPayload);
+
+      alice.close();
+      bob.close();
+    });
+
+    await t2.test('automatically falls back to tunnel mode when WebRTC connection state is FAILED', async () => {
+      const socket = new MockSimpleSocket();
+
+      class FailingRTCPeerConnection extends MockRTCPeerConnection {
+        constructor(config) {
+          super(config);
+          queueMicrotask(() => {
+            this.connectionState = 'failed';
+            this.emit('connectionstatechange');
+          });
+        }
+      }
+
+      const transport = new WebRTCPeerTransport({
+        role: 'initiator',
+        sessionId: 'session-fallback-test',
+        token: 'token-fallback',
+        peerId: 'peer-fail-alice',
+        targetPeerId: 'peer-fail-bob',
+        ws: socket,
+        RTCPeerConnection: FailingRTCPeerConnection
+      });
+
+      let modeChanged = false;
+      let openEmitted = false;
+      transport.on('modeChange', (m) => { if (m === 'tunnel') modeChanged = true; });
+      transport.on('open', () => { openEmitted = true; });
+
+      await transport.connect();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      assert.equal(transport.getTransportMode(), 'tunnel', 'Must transition to tunnel mode on WebRTC failure');
+      assert.equal(modeChanged, true);
+      assert.equal(openEmitted, true);
+      assert.equal(transport.isOpen(), true);
+
+      transport.close();
+    });
+  });
 });

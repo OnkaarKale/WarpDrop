@@ -39,6 +39,7 @@ export const SignalingMessageTypes = Object.freeze({
   SDP_OFFER: 'SDP_OFFER',
   SDP_ANSWER: 'SDP_ANSWER',
   ICE_CANDIDATE: 'ICE_CANDIDATE',
+  TUNNEL_FRAME: 'TUNNEL_FRAME',
   PEER_LEFT: 'PEER_LEFT',
   PING: 'PING',
   PONG: 'PONG',

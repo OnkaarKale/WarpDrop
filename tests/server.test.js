@@ -53,4 +53,29 @@ test('Server Integration Test Suite', async (t) => {
       instance.discoveryService.stop();
     }
   });
+
+  await t.test('GET /api/ice-servers returns valid ICE server configuration', async () => {
+    const instance = await startServer(0, '127.0.0.1');
+    const port = instance.server.address().port;
+
+    try {
+      const data = await new Promise((resolve, reject) => {
+        http.get(`http://127.0.0.1:${port}/api/ice-servers`, (res) => {
+          assert.equal(res.statusCode, 200);
+          assert.equal(res.headers['content-type'], 'application/json');
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve(JSON.parse(body)));
+        }).on('error', reject);
+      });
+
+      assert.ok(Array.isArray(data.iceServers), 'Must return iceServers array');
+      assert.ok(data.iceServers.length > 0, 'Must have at least one ICE server configured');
+      assert.ok(data.iceServers.some((s) => s.urls && s.urls.includes('google.com')), 'Includes Google STUN cluster by default');
+    } finally {
+      await instance.signalingServer.close();
+      await new Promise((resolve) => instance.server.close(resolve));
+      instance.discoveryService.stop();
+    }
+  });
 });

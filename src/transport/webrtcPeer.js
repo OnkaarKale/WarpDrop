@@ -9,6 +9,32 @@
 import { WebRTCConnection, WebRTCStates, DEFAULT_RTC_CONFIG } from './webrtcConnection.js';
 import { SignalingMessageTypes } from '../protocol/types.js';
 
+function uint8ArrayToBase64(bytes) {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  }
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8Array(base64) {
+  if (typeof Buffer !== 'undefined') {
+    const buf = Buffer.from(base64, 'base64');
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
 /**
  * High-level WebRTC Peer Transport.
  */
@@ -27,6 +53,8 @@ export class WebRTCPeerTransport {
    * @param {Object} [options.rtcConfig] - WebRTC configuration (defaults to Google STUN servers)
    * @param {number} [options.highWaterMark] - Flow control high water mark
    * @param {number} [options.lowWaterMark] - Flow control low water mark
+   * @param {boolean} [options.forceTunnel=false] - Force zero-knowledge WebSocket tunnel mode
+   * @param {number} [options.iceFallbackTimeoutMs=6000] - Timeout before fallback to tunnel
    */
   constructor({
     role = 'initiator',
@@ -40,7 +68,9 @@ export class WebRTCPeerTransport {
     RTCPeerConnection = globalThis.RTCPeerConnection,
     rtcConfig = DEFAULT_RTC_CONFIG,
     highWaterMark,
-    lowWaterMark
+    lowWaterMark,
+    forceTunnel = false,
+    iceFallbackTimeoutMs = 6000
   }) {
     if (!sessionId || !peerId || !token) {
       throw new Error('sessionId, peerId, and token are required to initialize WebRTCPeerTransport');
@@ -70,6 +100,13 @@ export class WebRTCPeerTransport {
     this.heartbeatTimer = null;
     this.pendingLocalCandidates = [];
 
+    // Dual-mode transport: 'p2p' (direct WebRTC DataChannel) or 'tunnel' (zero-knowledge WebSocket relay)
+    this.transportMode = forceTunnel ? 'tunnel' : 'p2p';
+    this.tunnelOpen = forceTunnel;
+    this.fallbackTimer = null;
+    this.iceFallbackTimeoutMs = iceFallbackTimeoutMs;
+    this.incomingFragments = new Map();
+
     this._bindWebRTCListeners();
   }
 
@@ -98,11 +135,21 @@ export class WebRTCPeerTransport {
   }
 
   getState() {
+    if (this.transportMode === 'tunnel') {
+      return this.isOpen() ? WebRTCStates.CONNECTED : WebRTCStates.CONNECTING;
+    }
     return this.webrtcConn.getState();
   }
 
   isOpen() {
+    if (this.transportMode === 'tunnel') {
+      return !this.closed && this.tunnelOpen && this.ws?.readyState === 1 && !!this.targetPeerId;
+    }
     return this.webrtcConn.isOpen();
+  }
+
+  getTransportMode() {
+    return this.transportMode;
   }
 
   /**
@@ -174,12 +221,60 @@ export class WebRTCPeerTransport {
   }
 
   /**
-   * Send a binary Phase 3 protocol frame across the WebRTC DataChannel.
+   * Send a binary Phase 3 protocol frame across the active transport (DataChannel or Tunnel).
    *
    * @param {Uint8Array|ArrayBuffer} frame
    * @returns {Promise<void>}
    */
   async send(frame) {
+    if (this.closed) {
+      throw new Error('Cannot send data: transport is closed');
+    }
+
+    if (this.transportMode === 'tunnel') {
+      if (!this.ws || this.ws.readyState !== 1 /* OPEN */ || !this.targetPeerId) {
+        throw new Error('Cannot send data: Tunnel WebSocket is not connected to peer');
+      }
+
+      const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
+      const FRAGMENT_SIZE = 32 * 1024; // 32 KB binary -> ~43 KB base64 (strictly under 64 KB)
+
+      if (bytes.byteLength <= FRAGMENT_SIZE) {
+        this._sendSignalingMessage({
+          type: SignalingMessageTypes.TUNNEL_FRAME,
+          sessionId: this.sessionId,
+          peerId: this.peerId,
+          targetPeerId: this.targetPeerId,
+          token: this.token,
+          payload: {
+            frame: uint8ArrayToBase64(bytes),
+            frag: 0,
+            total: 1
+          }
+        });
+      } else {
+        const total = Math.ceil(bytes.byteLength / FRAGMENT_SIZE);
+        const frameId = Math.random().toString(36).slice(2, 8);
+        for (let i = 0; i < total; i++) {
+          const slice = bytes.subarray(i * FRAGMENT_SIZE, Math.min((i + 1) * FRAGMENT_SIZE, bytes.byteLength));
+          this._sendSignalingMessage({
+            type: SignalingMessageTypes.TUNNEL_FRAME,
+            sessionId: this.sessionId,
+            peerId: this.peerId,
+            targetPeerId: this.targetPeerId,
+            token: this.token,
+            payload: {
+              frame: uint8ArrayToBase64(slice),
+              id: frameId,
+              frag: i,
+              total
+            }
+          });
+        }
+      }
+      return;
+    }
+
     return this.webrtcConn.send(frame);
   }
 
@@ -191,6 +286,9 @@ export class WebRTCPeerTransport {
     this.closed = true;
 
     this._stopSignalingHeartbeat();
+    this._stopFallbackWatchdog();
+    this.tunnelOpen = false;
+    this.incomingFragments.clear();
     this.pendingLocalCandidates = [];
     this.webrtcConn.close();
 
@@ -211,14 +309,46 @@ export class WebRTCPeerTransport {
   // --- Private Signaling & WebRTC Wiring ---
 
   _bindWebRTCListeners() {
-    this.webrtcConn.on('open', () => this.emit('open'));
-    this.webrtcConn.on('frame', (data) => this.emit('frame', data));
-    this.webrtcConn.on('error', (err) => this.emit('error', err));
-    this.webrtcConn.on('stateChange', (st) => this.emit('stateChange', st));
+    this.webrtcConn.on('open', () => {
+      if (this.transportMode === 'p2p') {
+        this._stopFallbackWatchdog();
+        this.emit('open');
+      }
+    });
+
+    this.webrtcConn.on('frame', (data) => {
+      if (this.transportMode === 'p2p') {
+        this.emit('frame', data);
+      }
+    });
+
+    this.webrtcConn.on('error', (err) => {
+      const msg = (err?.message || '').toLowerCase();
+      if (
+        this.transportMode === 'p2p' &&
+        !this.webrtcConn.isOpen() &&
+        (msg.includes('rtcpeerconnection failed') || msg.includes('ice connection failed'))
+      ) {
+        console.warn(`[Transport] WebRTC ICE failed (${err.message}); activating zero-knowledge WebSocket tunnel fallback`);
+        this._switchToTunnelMode(err.message);
+        return;
+      }
+      this.emit('error', err);
+    });
+
+    this.webrtcConn.on('stateChange', (st) => {
+      if (this.transportMode === 'tunnel') return;
+      if (st === WebRTCStates.FAILED) {
+        console.warn('[Transport] WebRTC connection state changed to FAILED; activating tunnel fallback');
+        this._switchToTunnelMode('WebRTC state FAILED');
+        return;
+      }
+      this.emit('stateChange', st);
+    });
 
     // Forward local ICE candidate across signaling, buffering if target peer not yet bound
     this.webrtcConn.on('icecandidate', (candidate) => {
-      if (!candidate) return;
+      if (!candidate || this.transportMode === 'tunnel') return;
       if (this.targetPeerId) {
         this._sendSignalingMessage({
           type: SignalingMessageTypes.ICE_CANDIDATE,
@@ -232,6 +362,50 @@ export class WebRTCPeerTransport {
         this.pendingLocalCandidates.push(candidate);
       }
     });
+  }
+
+  _startFallbackWatchdog() {
+    if (this.fallbackTimer || this.transportMode === 'tunnel' || this.closed) return;
+    this.fallbackTimer = setTimeout(() => {
+      if (this.transportMode === 'p2p' && !this.webrtcConn.isOpen() && !this.closed) {
+        console.warn('[Transport] WebRTC connection timeout reached; activating tunnel fallback');
+        this._switchToTunnelMode('ICE negotiation timeout');
+      }
+    }, this.iceFallbackTimeoutMs);
+    if (this.fallbackTimer && typeof this.fallbackTimer.unref === 'function') {
+      this.fallbackTimer.unref();
+    }
+  }
+
+  _stopFallbackWatchdog() {
+    if (this.fallbackTimer) {
+      clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+  }
+
+  _switchToTunnelMode(reason) {
+    if (this.transportMode === 'tunnel' || this.closed) return;
+    this.transportMode = 'tunnel';
+    this._stopFallbackWatchdog();
+
+    console.log(`[Transport] Active transport mode switched to TUNNEL (${reason})`);
+
+    try {
+      this.webrtcConn.close();
+    } catch {}
+
+    this.tunnelOpen = true;
+    this.emit('modeChange', 'tunnel');
+    this.emit('stateChange', WebRTCStates.CONNECTED);
+
+    if (this.targetPeerId && this.ws && this.ws.readyState === 1 /* OPEN */) {
+      queueMicrotask(() => {
+        if (!this.closed && this.tunnelOpen) {
+          this.emit('open');
+        }
+      });
+    }
   }
 
   _flushPendingLocalCandidates() {
@@ -322,11 +496,12 @@ export class WebRTCPeerTransport {
       this._flushPendingLocalCandidates();
     }
 
-    // Reject rogue SDP/ICE messages from unexpected peers or messages lacking peerId once target peer is established
+    // Reject rogue SDP/ICE/TUNNEL messages from unexpected peers or messages lacking peerId once target peer is established
     const isMediaNegotiation =
       msg.type === SignalingMessageTypes.SDP_OFFER ||
       msg.type === SignalingMessageTypes.SDP_ANSWER ||
-      msg.type === SignalingMessageTypes.ICE_CANDIDATE;
+      msg.type === SignalingMessageTypes.ICE_CANDIDATE ||
+      msg.type === SignalingMessageTypes.TUNNEL_FRAME;
 
     if (isMediaNegotiation) {
       if (!this.targetPeerId) {
@@ -349,6 +524,17 @@ export class WebRTCPeerTransport {
         if (msg.peerId !== this.peerId) {
           this.targetPeerId = msg.peerId;
           this.emit('peerJoined', msg.peerId);
+
+          if (this.transportMode === 'tunnel') {
+            queueMicrotask(() => {
+              if (!this.closed && this.tunnelOpen) {
+                this.emit('open');
+              }
+            });
+            return;
+          }
+
+          this._startFallbackWatchdog();
 
           if (this.isInitiator) {
             // Initiator creates DataChannel and sends SDP offer
@@ -373,6 +559,8 @@ export class WebRTCPeerTransport {
 
       case SignalingMessageTypes.SDP_OFFER: {
         if (!this.isInitiator && msg.payload) {
+          if (this.transportMode === 'tunnel') return;
+          this._startFallbackWatchdog();
           if (!this.targetPeerId) {
             this.targetPeerId = msg.peerId;
           }
@@ -411,6 +599,49 @@ export class WebRTCPeerTransport {
             await this.webrtcConn.addIceCandidate(msg.payload);
           } catch (err) {
             console.warn('[Signaling] Ignored non-fatal incoming ICE candidate error:', err.message);
+          }
+        }
+        break;
+      }
+
+      case SignalingMessageTypes.TUNNEL_FRAME: {
+        if (this.transportMode !== 'tunnel') {
+          this._switchToTunnelMode('Received TUNNEL_FRAME from peer');
+        }
+        if (msg.payload && typeof msg.payload.frame === 'string') {
+          try {
+            const partBytes = base64ToUint8Array(msg.payload.frame);
+            const total = msg.payload.total || 1;
+            const frag = msg.payload.frag || 0;
+            const frameId = msg.payload.id || 'single';
+
+            if (total === 1) {
+              this.emit('frame', partBytes);
+            } else {
+              if (!this.incomingFragments.has(frameId)) {
+                this.incomingFragments.set(frameId, { total, parts: new Map() });
+              }
+              const record = this.incomingFragments.get(frameId);
+              record.parts.set(frag, partBytes);
+
+              if (record.parts.size === total) {
+                this.incomingFragments.delete(frameId);
+                let totalLen = 0;
+                for (let i = 0; i < total; i++) {
+                  totalLen += record.parts.get(i).byteLength;
+                }
+                const merged = new Uint8Array(totalLen);
+                let offset = 0;
+                for (let i = 0; i < total; i++) {
+                  const part = record.parts.get(i);
+                  merged.set(part, offset);
+                  offset += part.byteLength;
+                }
+                this.emit('frame', merged);
+              }
+            }
+          } catch (err) {
+            console.error('[Transport] Failed to decode TUNNEL_FRAME payload:', err);
           }
         }
         break;
