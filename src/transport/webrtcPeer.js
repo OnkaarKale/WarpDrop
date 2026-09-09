@@ -232,14 +232,59 @@ export class WebRTCPeerTransport {
     }
 
     if (this.transportMode === 'tunnel') {
-      if (!this.ws || this.ws.readyState !== 1 /* OPEN */ || !this.targetPeerId) {
-        throw new Error('Cannot send data: Tunnel WebSocket is not connected to peer');
+      return this._sendTunnelFrame(frame);
+    }
+
+    try {
+      return await this.webrtcConn.send(frame);
+    } catch (err) {
+      const msg = (err?.message || '').toLowerCase();
+      // If DataChannel closed mid-transfer, drain failed, or connection reset
+      if (
+        !this.closed &&
+        (msg.includes('datachannel closed') ||
+         msg.includes('connection closed') ||
+         msg.includes('datachannel is not open') ||
+         msg.includes('drain') ||
+         msg.includes('rtcpeerconnection failed') ||
+         msg.includes('ice connection failed'))
+      ) {
+        console.warn(
+          `[Transport] WebRTC DataChannel failed during send (${err.message}); switching seamlessly to zero-knowledge WebSocket tunnel`
+        );
+        this._switchToTunnelMode(err.message);
+        return this._sendTunnelFrame(frame);
       }
+      throw err;
+    }
+  }
 
-      const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
-      const FRAGMENT_SIZE = 32 * 1024; // 32 KB binary -> ~43 KB base64 (strictly under 64 KB)
+  _sendTunnelFrame(frame) {
+    if (!this.ws || this.ws.readyState !== 1 /* OPEN */ || !this.targetPeerId) {
+      throw new Error('Cannot send data: Tunnel WebSocket is not connected to peer');
+    }
 
-      if (bytes.byteLength <= FRAGMENT_SIZE) {
+    const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
+    const FRAGMENT_SIZE = 32 * 1024; // 32 KB binary -> ~43 KB base64 (strictly under 64 KB)
+
+    if (bytes.byteLength <= FRAGMENT_SIZE) {
+      this._sendSignalingMessage({
+        type: SignalingMessageTypes.TUNNEL_FRAME,
+        sessionId: this.sessionId,
+        peerId: this.peerId,
+        targetPeerId: this.targetPeerId,
+        token: this.token,
+        payload: {
+          frame: uint8ArrayToBase64(bytes),
+          frag: 0,
+          total: 1
+        }
+      });
+    } else {
+      const total = Math.ceil(bytes.byteLength / FRAGMENT_SIZE);
+      const frameId = Math.random().toString(36).slice(2, 8);
+      for (let i = 0; i < total; i++) {
+        const slice = bytes.subarray(i * FRAGMENT_SIZE, Math.min((i + 1) * FRAGMENT_SIZE, bytes.byteLength));
         this._sendSignalingMessage({
           type: SignalingMessageTypes.TUNNEL_FRAME,
           sessionId: this.sessionId,
@@ -247,35 +292,14 @@ export class WebRTCPeerTransport {
           targetPeerId: this.targetPeerId,
           token: this.token,
           payload: {
-            frame: uint8ArrayToBase64(bytes),
-            frag: 0,
-            total: 1
+            frame: uint8ArrayToBase64(slice),
+            id: frameId,
+            frag: i,
+            total
           }
         });
-      } else {
-        const total = Math.ceil(bytes.byteLength / FRAGMENT_SIZE);
-        const frameId = Math.random().toString(36).slice(2, 8);
-        for (let i = 0; i < total; i++) {
-          const slice = bytes.subarray(i * FRAGMENT_SIZE, Math.min((i + 1) * FRAGMENT_SIZE, bytes.byteLength));
-          this._sendSignalingMessage({
-            type: SignalingMessageTypes.TUNNEL_FRAME,
-            sessionId: this.sessionId,
-            peerId: this.peerId,
-            targetPeerId: this.targetPeerId,
-            token: this.token,
-            payload: {
-              frame: uint8ArrayToBase64(slice),
-              id: frameId,
-              frag: i,
-              total
-            }
-          });
-        }
       }
-      return;
     }
-
-    return this.webrtcConn.send(frame);
   }
 
   /**
@@ -322,14 +346,25 @@ export class WebRTCPeerTransport {
       }
     });
 
+    this.webrtcConn.on('channelClose', () => {
+      if (this.transportMode === 'p2p' && !this.closed) {
+        console.warn('[Transport] WebRTC DataChannel closed; activating zero-knowledge WebSocket tunnel fallback');
+        this._switchToTunnelMode('DataChannel closed');
+      }
+    });
+
     this.webrtcConn.on('error', (err) => {
       const msg = (err?.message || '').toLowerCase();
       if (
         this.transportMode === 'p2p' &&
-        !this.webrtcConn.isOpen() &&
-        (msg.includes('rtcpeerconnection failed') || msg.includes('ice connection failed'))
+        !this.closed &&
+        (msg.includes('rtcpeerconnection failed') ||
+         msg.includes('ice connection failed') ||
+         msg.includes('datachannel') ||
+         msg.includes('connection closed') ||
+         msg.includes('drain'))
       ) {
-        console.warn(`[Transport] WebRTC ICE failed (${err.message}); activating zero-knowledge WebSocket tunnel fallback`);
+        console.warn(`[Transport] WebRTC error (${err.message}); activating zero-knowledge WebSocket tunnel fallback`);
         this._switchToTunnelMode(err.message);
         return;
       }

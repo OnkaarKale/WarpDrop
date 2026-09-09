@@ -442,6 +442,36 @@ test('WebRTC DataChannel P2P Transport Test Suite', async (t) => {
         /closed|aborted/i
       );
     });
+
+    await t2.test('resumes via active polling even if bufferedamountlow event is not dispatched', async () => {
+      const conn = new WebRTCConnection({
+        RTCPeerConnection: MockRTCPeerConnection,
+        isInitiator: true,
+        highWaterMark: 1024,
+        lowWaterMark: 256
+      });
+      const channel = conn.initDataChannel();
+      channel.simulateOpen();
+
+      // Simulate high buffer
+      channel.bufferedAmount = 1024;
+
+      let sendFinished = false;
+      const sendPromise = conn.send(new Uint8Array(100)).then(() => {
+        sendFinished = true;
+      });
+
+      await new Promise((r) => setTimeout(r, 5));
+      assert.equal(sendFinished, false);
+
+      // Buffer drops without emitting 'bufferedamountlow' event
+      channel.bufferedAmount = 100;
+
+      // Active polling (runs every 15ms) should detect the drop and resolve
+      await new Promise((r) => setTimeout(r, 45));
+      assert.equal(sendFinished, true, 'Drain must resolve via active poll');
+      conn.close();
+    });
   });
 
   await t.test('Failure & Teardown Handling', async (t2) => {
@@ -1060,6 +1090,67 @@ test('WebRTC DataChannel P2P Transport Test Suite', async (t) => {
       assert.equal(transport.isOpen(), true);
 
       transport.close();
+    });
+
+    await t2.test('seamlessly recovers mid-transfer by switching to tunnel mode if DataChannel closes during send', async () => {
+      const socketAlice = new MockSimpleSocket();
+      const socketBob = new MockSimpleSocket();
+
+      const alice = new WebRTCPeerTransport({
+        role: 'initiator',
+        sessionId: 'session-midtransfer-test',
+        token: 'token-midtransfer',
+        peerId: 'peer-alice-mid',
+        targetPeerId: 'peer-bob-mid',
+        ws: socketAlice,
+        RTCPeerConnection: MockRTCPeerConnection
+      });
+
+      const bob = new WebRTCPeerTransport({
+        role: 'responder',
+        sessionId: 'session-midtransfer-test',
+        token: 'token-midtransfer',
+        peerId: 'peer-bob-mid',
+        targetPeerId: 'peer-alice-mid',
+        ws: socketBob,
+        RTCPeerConnection: MockRTCPeerConnection
+      });
+
+      await alice.connect();
+      await bob.connect();
+
+      // Open DataChannel
+      const channel = alice.webrtcConn.initDataChannel();
+      channel.simulateOpen();
+
+      // Simulate DataChannel closing during send
+      alice.webrtcConn.send = async () => {
+        throw new Error('DataChannel closed while waiting for buffer drain');
+      };
+
+      const payload = new Uint8Array([1, 2, 3, 4, 5]);
+      let bobReceived = null;
+      bob.on('frame', (data) => {
+        bobReceived = data;
+      });
+
+      // Alice sends chunk - WebRTC send fails, but alice.send() catches and switches to tunnel
+      await alice.send(payload);
+
+      assert.equal(alice.getTransportMode(), 'tunnel', 'Alice must switch to tunnel mode');
+
+      // Forward TUNNEL_FRAME to Bob
+      const tunnelMsgs = socketAlice.sent.filter((m) => m.type === 'TUNNEL_FRAME');
+      assert.ok(tunnelMsgs.length >= 1, 'Chunk must be forwarded as TUNNEL_FRAME');
+
+      for (const msg of tunnelMsgs) {
+        socketBob.emit('message', JSON.stringify(msg));
+      }
+
+      assert.deepEqual(bobReceived, payload, 'Bob must receive the chunk seamlessly over the tunnel');
+
+      alice.close();
+      bob.close();
     });
   });
 });

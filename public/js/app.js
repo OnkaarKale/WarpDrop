@@ -903,12 +903,10 @@ async function startSenderStreaming() {
         : (progress.currentChunk / progress.totalChunks) * chunker.fileSize;
       updateProgressMetrics(transferredBytes, chunker.fileSize);
 
-      // Micro-pacing & event loop yield every 4 chunks (256 KB)
+      // Micro-pacing & event loop yield between chunks:
       // Gives the router's half-duplex Wi-Fi radio airtime to interleave transmissions,
-      // preventing packet collisions, wireless bufferbloat, and dropped ICE keepalives
-      if (chunker.currentChunkIndex % 4 === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
+      // preventing wireless packet collisions, bufferbloat, and dropped ICE keepalives
+      await new Promise((resolve) => setTimeout(resolve, 2));
     }
 
     if (!isCancelled) {

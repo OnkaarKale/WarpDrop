@@ -5,14 +5,14 @@
  * Monitors `bufferedAmount` against high and low water marks.
  */
 
-export const DEFAULT_HIGH_WATER_MARK = 256 * 1024; // 256 KB (Wi-Fi safe, anti-bufferbloat)
-export const DEFAULT_LOW_WATER_MARK = 64 * 1024;   // 64 KB
+export const DEFAULT_HIGH_WATER_MARK = 128 * 1024; // 128 KB (Wi-Fi safe, anti-bufferbloat: 2x 64KB chunks max)
+export const DEFAULT_LOW_WATER_MARK = 32 * 1024;   // 32 KB (resumes as soon as 1 chunk clears)
 
 export class FlowController {
   /**
    * @param {Object} [options]
-   * @param {number} [options.highWaterMark=262144] - Maximum buffered bytes before pausing
-   * @param {number} [options.lowWaterMark=65536]   - Threshold to resume sending
+   * @param {number} [options.highWaterMark=131072] - Maximum buffered bytes before pausing
+   * @param {number} [options.lowWaterMark=32768]   - Threshold to resume sending
    */
   constructor({
     highWaterMark = DEFAULT_HIGH_WATER_MARK,
@@ -65,6 +65,7 @@ export class FlowController {
 
     return new Promise((resolve, reject) => {
       let timeoutTimer = null;
+      let pollTimer = null;
 
       const addListener = (target, evt, fn) => {
         if (typeof target.addEventListener === 'function') target.addEventListener(evt, fn);
@@ -79,6 +80,7 @@ export class FlowController {
 
       const cleanup = () => {
         if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (pollTimer) clearInterval(pollTimer);
         removeListener(channel, 'bufferedamountlow', onLow);
         removeListener(channel, 'close', onClose);
         removeListener(channel, 'error', onError);
@@ -108,11 +110,29 @@ export class FlowController {
       addListener(channel, 'close', onClose);
       addListener(channel, 'error', onError);
 
+      // Active polling fallback: Mobile/Wi-Fi browsers sometimes delay or drop the
+      // 'bufferedamountlow' event. Polling unblocks immediately when bufferedAmount <= lowWaterMark.
+      pollTimer = setInterval(() => {
+        if (!channel || channel.readyState !== 'open') {
+          return;
+        }
+        if ((channel.bufferedAmount || 0) <= this.lowWaterMark) {
+          cleanup();
+          resolve();
+        }
+      }, 15);
+      if (pollTimer && typeof pollTimer.unref === 'function') {
+        pollTimer.unref();
+      }
+
       timeoutTimer = setTimeout(() => {
         cleanup();
         // Even if timeout triggered, proceed to avoid permanent deadlock
         resolve();
       }, timeoutMs);
+      if (timeoutTimer && typeof timeoutTimer.unref === 'function') {
+        timeoutTimer.unref();
+      }
     });
   }
 }
