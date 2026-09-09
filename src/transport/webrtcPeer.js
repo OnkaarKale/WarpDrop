@@ -68,6 +68,7 @@ export class WebRTCPeerTransport {
     this.listeners = new Map();
     this.closed = false;
     this.heartbeatTimer = null;
+    this.pendingLocalCandidates = [];
 
     this._bindWebRTCListeners();
   }
@@ -190,6 +191,7 @@ export class WebRTCPeerTransport {
     this.closed = true;
 
     this._stopSignalingHeartbeat();
+    this.pendingLocalCandidates = [];
     this.webrtcConn.close();
 
     if (this.ws) {
@@ -214,9 +216,27 @@ export class WebRTCPeerTransport {
     this.webrtcConn.on('error', (err) => this.emit('error', err));
     this.webrtcConn.on('stateChange', (st) => this.emit('stateChange', st));
 
-    // Forward local ICE candidate across signaling
+    // Forward local ICE candidate across signaling, buffering if target peer not yet bound
     this.webrtcConn.on('icecandidate', (candidate) => {
-      if (candidate && this.targetPeerId) {
+      if (!candidate) return;
+      if (this.targetPeerId) {
+        this._sendSignalingMessage({
+          type: SignalingMessageTypes.ICE_CANDIDATE,
+          sessionId: this.sessionId,
+          peerId: this.peerId,
+          targetPeerId: this.targetPeerId,
+          token: this.token,
+          payload: candidate
+        });
+      } else {
+        this.pendingLocalCandidates.push(candidate);
+      }
+    });
+  }
+
+  _flushPendingLocalCandidates() {
+    if (this.targetPeerId && this.pendingLocalCandidates.length > 0) {
+      for (const candidate of this.pendingLocalCandidates) {
         this._sendSignalingMessage({
           type: SignalingMessageTypes.ICE_CANDIDATE,
           sessionId: this.sessionId,
@@ -226,7 +246,8 @@ export class WebRTCPeerTransport {
           payload: candidate
         });
       }
-    });
+      this.pendingLocalCandidates = [];
+    }
   }
 
   _setupSignalingListeners() {
@@ -292,11 +313,13 @@ export class WebRTCPeerTransport {
     // If counterpart peer joins or reconnects, bind the new target peer ID
     if (msg.type === SignalingMessageTypes.PEER_JOINED && msg.peerId !== this.peerId) {
       this.targetPeerId = msg.peerId;
+      this._flushPendingLocalCandidates();
     }
 
     // Allow renegotiated SDP offer from legitimate sender reconnecting to update targetPeerId
     if (msg.type === SignalingMessageTypes.SDP_OFFER && !this.isInitiator && typeof msg.peerId === 'string' && msg.peerId.startsWith('tx-')) {
       this.targetPeerId = msg.peerId;
+      this._flushPendingLocalCandidates();
     }
 
     // Reject rogue SDP/ICE messages from unexpected peers or messages lacking peerId once target peer is established
@@ -308,6 +331,7 @@ export class WebRTCPeerTransport {
     if (isMediaNegotiation) {
       if (!this.targetPeerId) {
         this.targetPeerId = msg.peerId;
+        this._flushPendingLocalCandidates();
       } else if (msg.peerId !== this.targetPeerId) {
         this.emit(
           'error',
